@@ -22,7 +22,7 @@ func (bh *basicHead) encode() []byte {
         return hdr[:2]
     } else if bh.csid < 65600 {
         hdr[0] |= 1
-        binary.BigEndian.PutUint16(hdr[1:], uint16(bh.csid-64))
+        binary.LittleEndian.PutUint16(hdr[1:], uint16(bh.csid-64))
         return hdr
     } else {
         panic("invaild csid")
@@ -78,7 +78,7 @@ func (cmh *chunkMsgHead) encode(fmt uint8) []byte {
 func (cmh *chunkMsgHead) decode(fmt uint8, data []byte) {
     switch fmt {
     case 0:
-        cmh.msgStreamId = uint32(data[7])<<24 | uint32(data[8])<<16 | uint32(data[9])<<8 | uint32(data[10])
+        cmh.msgStreamId = binary.LittleEndian.Uint32(data[7:])
         fallthrough
     case 1:
         cmh.msgLen = uint32(data[3])<<16 | uint32(data[4])<<8 | uint32(data[5])
@@ -114,33 +114,8 @@ type chunkPacket struct {
 }
 
 func (chk *chunkPacket) decodeHead(data []byte) {
-
-    chk.basic.fmt = data[0] >> 6
-    chk.basic.csid = uint32(data[0] & 0x3F)
-    if chk.basic.csid == 0 {
-        chk.basic.csid = uint32(data[1]) + 64
-        data = data[2:]
-    } else if chk.basic.csid == 1 {
-        chk.basic.csid = uint32(data[2])*256 + uint32(data[1]) + 64
-        data = data[3:]
-    } else {
-        data = data[1:]
-    }
-
-    switch chk.basic.fmt {
-    case 0:
-        chk.msgHdr.msgStreamId = uint32(data[7])<<24 | uint32(data[8])<<16 | uint32(data[9])<<8 | uint32(data[10])
-        fallthrough
-    case 1:
-        chk.msgHdr.msgLen = uint32(data[3])<<16 | uint32(data[4])<<8 | uint32(data[5])
-        chk.msgHdr.msgTypeId = data[6]
-        fallthrough
-    case 2:
-        chk.msgHdr.timestamp = uint32(data[0])<<16 | uint32(data[1])<<8 | uint32(data[2])
-    case 3:
-    default:
-        panic("unknown fmt")
-    }
+    chk.basic.decode(data)
+    chk.msgHdr.decode(chk.basic.fmt, data[clacBasicHeadLen(data):])
 }
 
 func (chk *chunkPacket) encode() []byte {
