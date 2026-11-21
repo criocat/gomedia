@@ -13,6 +13,60 @@ import (
 	"github.com/yapingcat/gomedia/go-mpeg2"
 )
 
+func TestMP4TrackDurationWithBackwardDTS(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dts  []uint64
+		want []uint32
+	}{
+		{"subtract backward step", []uint64{100, 110, 150, 130, 140}, []uint32{0, 0, 40, 20, 30}},
+		{"saturate at zero", []uint64{100, 110, 150, 90, 100}, []uint32{0, 0, 40, 0, 10}},
+		{"exactly zero", []uint64{100, 110, 150, 110}, []uint32{0, 0, 40, 0}},
+		{"equal timestamps", []uint64{100, 110, 150, 150}, []uint32{0, 0, 40, 40}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var track mp4track
+			for i, dts := range tc.dts {
+				track.addSampleEntry(sampleEntry{dts: dts})
+				if got := track.duration; got != tc.want[i] {
+					t.Errorf("sample %d at DTS %d: duration = %d, want %d", i, dts, got, tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestMP4MuxerWritesDurationWithBackwardDTS(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "backward-dts-*.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	muxer, err := CreateMp4Muxer(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := muxer.AddAudioTrack(MP4_CODEC_G711A, WithAudioSampleRate(8000), WithAudioChannelCount(1))
+	for _, dts := range []uint64{0, 10, 50, 30, 40} {
+		if err := muxer.Write(id, make([]byte, 80), dts, dts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := muxer.WriteTrailer(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	tracks, err := CreateMp4Demuxer(file).ReadHead()
+	if err != nil && err != io.EOF {
+		t.Fatal(err)
+	}
+	if len(tracks) != 1 || tracks[0].Duration != 30 {
+		t.Fatalf("tracks = %+v, want one track with duration 30", tracks)
+	}
+}
+
 func TestCreateMp4Reader(t *testing.T) {
 	f, err := os.Open("jellyfish-3-mbps-hd.h264.mp4")
 	if err != nil {
