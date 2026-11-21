@@ -4,6 +4,7 @@ import (
     "encoding/binary"
     "errors"
     "io"
+    "math/bits"
 )
 
 // aligned(8) class TrackRunBox extends FullBox(‘trun’, version, tr_flags) {
@@ -76,17 +77,22 @@ func (trun *TrackRunBox) Size() uint64 {
 }
 
 func (trun *TrackRunBox) Decode(r io.Reader, size uint32, dataOffset uint32) (offset int, err error) {
-    if offset, err = trun.Box.Decode(r); err != nil {
-        return
-    }
-    buf := make([]byte, size-12)
-    if _, err = io.ReadFull(r, buf); err != nil {
-        return 0, err
+    offset, buf, err := trun.Box.decodeCountedPayload(r, size)
+    if err != nil {
+        return offset, err
     }
     n := 0
     trun.SampleCount = binary.BigEndian.Uint32(buf[n:])
     n += 4
     trunFlags := uint32(trun.Box.Flags[0])<<16 | uint32(trun.Box.Flags[1])<<8 | uint32(trun.Box.Flags[2])
+    const headerFields = TR_FLAG_DATA_OFFSET | TR_FLAG_DATA_FIRST_SAMPLE_FLAGS
+    const sampleFields = TR_FLAG_DATA_SAMPLE_DURATION | TR_FLAG_DATA_SAMPLE_SIZE | TR_FLAG_DATA_SAMPLE_FLAGS | TR_FLAG_DATA_SAMPLE_COMPOSITION_TIME
+    headerBytes := 4 * bits.OnesCount32(trunFlags&headerFields)
+    sampleBytes := 4 * bits.OnesCount32(trunFlags&sampleFields)
+    needed := uint64(headerBytes) + uint64(sampleBytes)*uint64(trun.SampleCount)
+    if needed > uint64(len(buf)-n) {
+        return 0, io.ErrUnexpectedEOF
+    }
 
     if trunFlags&uint32(TR_FLAG_DATA_OFFSET) > 0 {
         trun.Dataoffset = int32(binary.BigEndian.Uint32(buf[n:]))

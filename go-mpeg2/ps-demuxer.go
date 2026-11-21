@@ -82,16 +82,7 @@ func (psdemuxer *PSDemuxer) Input(data []byte) error {
                 psdemuxer.OnPacket(psdemuxer.pkg.Header, ret)
             }
         case 0x000001BB: //system header
-            if psdemuxer.pkg.Header == nil {
-                panic("psdemuxer.pkg.Header must not be nil")
-            }
-            if psdemuxer.pkg.System == nil {
-                psdemuxer.pkg.System = new(System_header)
-            }
-            ret = psdemuxer.pkg.System.Decode(bs)
-            if psdemuxer.OnPacket != nil {
-                psdemuxer.OnPacket(psdemuxer.pkg.System, ret)
-            }
+            ret = psdemuxer.decodeSystemHeader(bs)
         case 0x000001BC: //program stream map
             if psdemuxer.pkg.Psm == nil {
                 psdemuxer.pkg.Psm = new(Program_stream_map)
@@ -161,6 +152,20 @@ func (psdemuxer *PSDemuxer) Input(data []byte) error {
     }
 
     return ret
+}
+
+func (psdemuxer *PSDemuxer) decodeSystemHeader(bs *codec.BitStream) error {
+    if psdemuxer.pkg.Header == nil {
+        return errParser
+    }
+    if psdemuxer.pkg.System == nil {
+        psdemuxer.pkg.System = new(System_header)
+    }
+    err := psdemuxer.pkg.System.Decode(bs)
+    if psdemuxer.OnPacket != nil {
+        psdemuxer.OnPacket(psdemuxer.pkg.System, err)
+    }
+    return err
 }
 
 func (psdemuxer *PSDemuxer) Flush() {

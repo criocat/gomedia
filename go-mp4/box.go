@@ -134,6 +134,28 @@ func (box *FullBox) Decode(r io.Reader) (int, error) {
     return 4, nil
 }
 
+// decodeCountedPayload starts after the basic header and expects a payload with a 32-bit count.
+func (box *FullBox) decodeCountedPayload(r io.Reader, size uint32) (int, []byte, error) {
+    const headerSize = 12
+    const countSize = 4
+    if size < headerSize+countSize {
+        return 0, nil, io.ErrUnexpectedEOF
+    }
+    offset, err := box.Decode(r)
+    if err != nil {
+        return offset, nil, err
+    }
+    payloadSize := int64(size) - headerSize
+    payload, err := io.ReadAll(io.LimitReader(r, payloadSize))
+    if err != nil {
+        return 0, nil, err
+    }
+    if int64(len(payload)) != payloadSize {
+        return 0, nil, io.ErrUnexpectedEOF
+    }
+    return offset, payload, nil
+}
+
 func (box *FullBox) Encode() (int, []byte) {
     box.Box.Size = box.Size()
     offset, buf := box.Box.Encode()

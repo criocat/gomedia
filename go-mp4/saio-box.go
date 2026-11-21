@@ -15,16 +15,16 @@ type SaioBox struct {
 }
 
 func (s *SaioBox) Decode(r io.Reader, size uint32) error {
- 	if _, err := s.Box.Decode(r); err != nil {
-		return err
-	}
-	buf := make([]byte, size-12)
-	if _, err := io.ReadFull(r, buf); err != nil {
+	_, buf, err := s.Box.decodeCountedPayload(r, size)
+	if err != nil {
 		return err
 	}
 	var n int
 	flags := uint32(s.Box.Flags[0])<<16 | uint32(s.Box.Flags[1])<<8 | uint32(s.Box.Flags[2])
 	if flags&0x01 != 0 {
+		if len(buf) < 12 {
+			return io.ErrUnexpectedEOF
+		}
 		s.AuxInfoType = string(buf[n:n+4])
 		n += 4
 		s.AuxInfoTypeParameter = binary.BigEndian.Uint32(buf[n:])
@@ -32,6 +32,13 @@ func (s *SaioBox) Decode(r io.Reader, size uint32) error {
 	}
 	entryCount := binary.BigEndian.Uint32(buf[n:])
 	n += 4
+	entrySize := 8
+	if s.Box.Version == 0 {
+		entrySize = 4
+	}
+	if uint64(entryCount) > uint64((len(buf)-n)/entrySize) {
+		return io.ErrUnexpectedEOF
+	}
 	if s.Box.Version == 0 {
 		for i := uint32(0); i < entryCount; i++ {
 			s.Offset = append(s.Offset, int64(binary.BigEndian.Uint32(buf[n:])))

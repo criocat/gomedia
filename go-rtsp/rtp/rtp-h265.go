@@ -151,9 +151,18 @@ func (unpacker *H265UnPacker) UnPack(pkt []byte) error {
     if err := pkg.Decode(pkt); err != nil {
         return err
     }
+    return unpacker.unpackPayload(pkg)
+}
 
+func (unpacker *H265UnPacker) unpackPayload(pkg *RtpPacket) error {
+    if len(pkg.Payload) == 0 {
+        return nil
+    }
     if unpacker.onRtp != nil {
         unpacker.onRtp(pkg)
+    }
+    if len(pkg.Payload) < 2 {
+        return errors.New("truncated HEVC RTP NAL header")
     }
 
     packType := (pkg.Payload[0] >> 1 & 0x3f)
@@ -165,14 +174,17 @@ func (unpacker *H265UnPacker) UnPack(pkt []byte) error {
         }
         unpacker.frameBuffer.Truncate(4)
     case packType == 49:
-        unpacker.unpackFu(pkg)
+        return unpacker.unpackFu(pkg)
     default:
-        return errors.New("unsupport h264 rtp packet type")
+        return errors.New("unsupported HEVC RTP packet type")
     }
     return nil
 }
 
 func (unpacker *H265UnPacker) unpackFu(pkt *RtpPacket) error {
+    if len(pkt.Payload) < 3 {
+        return errors.New("truncated HEVC RTP fragment header")
+    }
     s := pkt.Payload[2] & 0x80
     e := pkt.Payload[2] & 0x40
     if s > 0 {

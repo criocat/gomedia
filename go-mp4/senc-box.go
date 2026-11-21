@@ -19,32 +19,43 @@ type SencBox struct{
 }
 
 func (senc *SencBox) Decode(r io.Reader, size uint32, perSampleIVSize uint8) (offset int, err error) {
-	if offset, err = senc.Box.Decode(r); err != nil {
-		return
+	offset, buf, err := senc.Box.decodeCountedPayload(r, size)
+	if err != nil {
+		return offset, err
 	}
 	senc.PerSampleIVSize = uint32(perSampleIVSize)
-	buf := make([]byte, size-12)
-    if _, err = io.ReadFull(r, buf); err != nil {
-        return 0, err
-    }
 	n := 0
 	senc.SampleCount = binary.BigEndian.Uint32(buf[n:])
 	n += 4
 	sencFlags := uint32(senc.Box.Flags[0])<<16 | uint32(senc.Box.Flags[1])<<8 | uint32(senc.Box.Flags[2])
-
+	ivSize := int(perSampleIVSize)
+	minEntrySize := ivSize
+	hasSubsamples := sencFlags&UseSubsampleEncryption != 0
+	if hasSubsamples {
+		minEntrySize += 2
+	}
+	if uint64(minEntrySize)*uint64(senc.SampleCount) > uint64(len(buf)-n) {
+		return 0, io.ErrUnexpectedEOF
+	}
 
 	senc.EntryList = new(movsenc)
 	senc.EntryList.entrys = make([]sencEntry, senc.SampleCount)
 	for i := 0; i < int(senc.SampleCount); i++ {
-		senc.EntryList.entrys[i].iv = buf[n:n+int(senc.PerSampleIVSize)]
-		n += int(senc.PerSampleIVSize)
+		if len(buf)-n < minEntrySize {
+			return 0, io.ErrUnexpectedEOF
+		}
+		senc.EntryList.entrys[i].iv = buf[n:n+ivSize]
+		n += ivSize
 
-		if sencFlags&UseSubsampleEncryption <= 0 {
-        	continue
+		if !hasSubsamples {
+			continue
 		}
 
 		subsampleCount := binary.BigEndian.Uint16(buf[n:])
 		n += 2
+		if int(subsampleCount) > (len(buf)-n)/6 {
+			return 0, io.ErrUnexpectedEOF
+		}
 
 		senc.EntryList.entrys[i].subSamples = make([]subSampleEntry, subsampleCount)
 		for j := uint16(0); j < subsampleCount; j++ {
