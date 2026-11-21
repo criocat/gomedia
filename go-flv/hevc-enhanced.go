@@ -60,7 +60,8 @@ func (demuxer *HevcTagDemuxer) decodeHEVCTag(data []byte) error {
 	var packetType byte
 	var cts int32
 	headerSize := 5
-	if data[0]&0x80 != 0 {
+	enhanced := data[0]&0x80 != 0
+	if enhanced {
 		if string(data[1:5]) != "hvc1" {
 			return errors.New("unsupported enhanced HEVC FourCC")
 		}
@@ -87,7 +88,7 @@ func (demuxer *HevcTagDemuxer) decodeHEVCTag(data []byte) error {
 	case PacketTypeSequenceStart:
 		return demuxer.decodeHEVCConfiguration(payload)
 	case PacketTypeCodedFrames, PacketTypeCodedFramesX:
-		return demuxer.decodeNalus(payload, cts)
+		return demuxer.decodeNalus(payload, cts, enhanced)
 	case PacketTypeSequenceEnd:
 		demuxer.SpsPpsVps = nil
 		demuxer.naluLengthSize = 0
@@ -139,37 +140,53 @@ func (demuxer *HevcTagDemuxer) decodeHEVCConfiguration(data []byte) error {
 	return nil
 }
 
-func (demuxer *HevcTagDemuxer) decodeNalus(data []byte, cts int32) error {
-	if demuxer.naluLengthSize == 0 {
+func (demuxer *HevcTagDemuxer) decodeNalus(data []byte, cts int32, enhanced bool) error {
+	lengthSize := demuxer.naluLengthSize
+	legacyStartup := !enhanced && lengthSize == 0
+	if legacyStartup {
+		lengthSize = 4
+	}
+	if lengthSize == 0 {
 		return errors.New("HEVC frame before decoder configuration")
 	}
 	if len(data) == 0 {
 		return errors.New("empty HEVC frame")
 	}
 	var frame []byte
+	var parameterSets []byte
 	var irap, vps, sps, pps bool
 	for len(data) > 0 {
-		if len(data) < demuxer.naluLengthSize {
+		if len(data) < lengthSize {
 			return errors.New("truncated HEVC NAL length")
 		}
 		var size uint32
-		for _, b := range data[:demuxer.naluLengthSize] {
+		for _, b := range data[:lengthSize] {
 			size = size<<8 | uint32(b)
 		}
-		data = data[demuxer.naluLengthSize:]
+		data = data[lengthSize:]
 		if size < 2 || uint64(size) > uint64(len(data)) {
 			return errors.New("invalid HEVC NAL length")
 		}
-		nalType := (data[0] >> 1) & 0x3f
+		nalType := codec.H265NaluTypeWithoutStartCode(data)
 		irap = irap || (nalType >= 16 && nalType <= 21)
-		vps = vps || nalType == 32
-		sps = sps || nalType == 33
-		pps = pps || nalType == 34
+		vps = vps || nalType == codec.H265_NAL_VPS
+		sps = sps || nalType == codec.H265_NAL_SPS
+		pps = pps || nalType == codec.H265_NAL_PPS
+		offset := len(frame)
 		frame = append(frame, 0, 0, 0, 1)
 		frame = append(frame, data[:size]...)
+		if legacyStartup && nalType >= codec.H265_NAL_VPS && nalType <= codec.H265_NAL_PPS {
+			parameterSets = append(parameterSets, frame[offset:]...)
+		}
 		data = data[size:]
 	}
-	if irap && (!vps || !sps || !pps) {
+	if legacyStartup {
+		if !irap || !vps || !sps || !pps {
+			return errors.New("legacy HEVC startup requires a keyframe with VPS, SPS and PPS")
+		}
+		demuxer.SpsPpsVps = parameterSets
+		demuxer.naluLengthSize = lengthSize
+	} else if irap && (!vps || !sps || !pps) {
 		// Allocate a separate frame, queued frames must not alias cached VPS/SPS/PPS.
 		prefixed := make([]byte, 0, len(demuxer.SpsPpsVps)+len(frame))
 		prefixed = append(prefixed, demuxer.SpsPpsVps...)

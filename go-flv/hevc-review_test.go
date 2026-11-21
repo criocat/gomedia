@@ -8,6 +8,52 @@ import (
 	"github.com/yapingcat/gomedia/go-codec"
 )
 
+func TestHEVCLegacyStartup(t *testing.T) {
+	firstFrame := testHEVCFirstFrame(t)
+	start := []byte{byte(KEY_FRAME)<<4 | byte(FLV_HEVC), AVC_NALU, 0, 0, 0}
+	next := append([]byte(nil), start...)
+	var parameterSets, frameWithoutSets []byte
+	codec.SplitFrameWithStartCode(firstFrame, func(nalu []byte) bool {
+		start = appendHEVCNAL(start, nalu)
+		switch codec.H265NaluType(nalu) {
+		case codec.H265_NAL_VPS, codec.H265_NAL_SPS, codec.H265_NAL_PPS:
+			parameterSets = append(parameterSets, nalu...)
+		default:
+			next = appendHEVCNAL(next, nalu)
+			frameWithoutSets = append(frameWithoutSets, nalu...)
+		}
+		return true
+	})
+
+	d := NewHevcTagDemuxer()
+	var frames [][]byte
+	d.OnFrame(func(cid codec.CodecID, frame []byte, cts int) {
+		if cid != codec.CODECID_VIDEO_H265 || cts != 0 {
+			t.Fatalf("wrong codec or composition time: %v, %d", cid, cts)
+		}
+		frames = append(frames, frame)
+	})
+	enhanced := append([]byte{0x93, 'h', 'v', 'c', '1'}, start[5:]...)
+	if err := d.Decode(enhanced); err == nil {
+		t.Fatal("accepted enhanced HEVC before SequenceStart")
+	}
+	if err := d.Decode(next); err == nil || len(frames) != 0 {
+		t.Fatal("accepted legacy startup without parameter sets")
+	}
+	if err := d.Decode(start); err != nil {
+		t.Fatalf("legacy startup failed: %v", err)
+	}
+	if len(frames) != 1 || !bytes.Equal(frames[0], firstFrame) {
+		t.Fatal("wrong legacy startup frame")
+	}
+	if err := d.Decode(next); err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 2 || !bytes.Equal(frames[1], append(parameterSets, frameWithoutSets...)) {
+		t.Fatal("following keyframe did not get the initial parameter sets")
+	}
+}
+
 func TestHEVCConfigurationLifecycle(t *testing.T) {
 	d := NewHevcTagDemuxer()
 	frame := []byte{0x93, 'h', 'v', 'c', '1', 0, 0, 0, 2, 0x26, 1}
