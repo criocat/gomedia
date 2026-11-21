@@ -7,11 +7,6 @@ import (
 	"github.com/yapingcat/gomedia/go-codec"
 )
 
-// Enhanced RTMP v1, VideoTagHeader: hvc1 uses signed 24-bit PTS-DTS.
-func signedCompositionTime(data []byte) int32 {
-	return int32(GetUint24(data)<<8) >> 8
-}
-
 // nalu is supplied by SplitFrameWithStartCode. Append its length and payload
 // without replacing the start code in the caller's buffer.
 func appendHEVCNAL(dst, nalu []byte) []byte {

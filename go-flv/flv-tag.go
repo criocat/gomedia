@@ -132,10 +132,7 @@ func (vtag *VideoTag) Decode(data []byte) {
         vtag.FrameType = data[0] >> 4
         vtag.CodecId = data[0] & 0x0F
         switch FLV_VIDEO_CODEC_ID(vtag.CodecId) {
-        case FLV_AVC:
-            vtag.AVCPacketType = data[1]
-            vtag.CompositionTime = int32(GetUint24(data[2:]))
-        case FLV_HEVC:
+        case FLV_AVC, FLV_HEVC:
             vtag.AVCPacketType = data[1]
             vtag.CompositionTime = signedCompositionTime(data[2:])
         }

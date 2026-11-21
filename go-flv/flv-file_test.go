@@ -9,6 +9,17 @@ import (
 	"github.com/yapingcat/gomedia/go-codec"
 )
 
+func TestAVCSignedCompositionTime(t *testing.T) {
+	for _, cts := range []int32{-1 << 23, -40, 0, 40, 1<<23 - 1} {
+		data := WriteVideoTag(nil, false, FLV_AVC, cts, false)
+		var tag VideoTag
+		tag.Decode(data)
+		if tag.CompositionTime != cts {
+			t.Errorf("CompositionTime = %d, want %d", tag.CompositionTime, cts)
+		}
+	}
+}
+
 func TestFlvReader_Input(t *testing.T) {
 	t.Run("test_1", func(t *testing.T) {
 		videoFile, _ := os.OpenFile("v.h264", os.O_CREATE|os.O_RDWR, 0666)

@@ -19,6 +19,11 @@ func GetUint24(b []byte) (v uint32) {
     return v
 }
 
+// CompositionTime stores PTS-DTS in a signed 24-bit field.
+func signedCompositionTime(data []byte) int32 {
+    return int32(GetUint24(data)<<8) >> 8
+}
+
 func CovertFlvVideoCodecId2MpegCodecId(cid FLV_VIDEO_CODEC_ID) codec.CodecID {
     if cid == FLV_AVC {
         return codec.CODECID_VIDEO_H264
