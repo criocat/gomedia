@@ -117,8 +117,9 @@ func (sps *SPS) Decode(bs *BitStream) {
 		sps.Offset_for_non_ref_pic = bs.ReadSE()         // offset_for_non_ref_pic
 		sps.Offset_for_top_to_bottom_field = bs.ReadSE() // offset_for_top_to_bottom_field
 		num_ref_frames_in_pic_order_cnt_cycle := bs.ReadUE()
-		for i := 0; i < int(num_ref_frames_in_pic_order_cnt_cycle); i++ {
-			sps.Offset_for_ref_frame[i] = bs.ReadSE() // offset_for_ref_frame
+		sps.Offset_for_ref_frame = nil
+		for i := uint64(0); i < num_ref_frames_in_pic_order_cnt_cycle; i++ {
+			sps.Offset_for_ref_frame = append(sps.Offset_for_ref_frame, bs.ReadSE())
 		}
 	}
 	sps.Max_num_ref_frames = bs.ReadUE()
@@ -541,21 +542,15 @@ func (h264Vui *H264VuiParameters) Decode(bs *BitStream) {
 		h264Vui.LowDelayHrdFlag = bs.Uint8(1)
 	}
 
-	/*
-		TODO - These fields were causing problems because we'd run out of bits when parsing. Maybe they're optional in certain versions/levels/configurations?
-			h264Vui.PicStructPresentFlag = bs.GetBit()
-			h264Vui.BitstreamRestrictionFlag = bs.GetBit()
-
-			if h264Vui.BitstreamRestrictionFlag == 1 {
-				h264Vui.MotionVectorsOverPicBoundaries = bs.GetBit()
-				h264Vui.MaxBytesPerPicDenom = bs.ReadUE()
-				h264Vui.MaxBitsPerMbDenom = bs.ReadUE()
-				h264Vui.Log2MaxMvLengthHorizontal = bs.ReadUE()
-				h264Vui.Log2MaxMvLengthVertical = bs.ReadUE()
-				h264Vui.NumReorderFrames = bs.ReadUE()
-				h264Vui.MaxDecFrameBuffering = bs.ReadUE()
-			}
-	*/
+	h264Vui.PicStructPresentFlag = 0
+	h264Vui.BitstreamRestrictionFlag = 0
+	if bs.RemainBits() > 0 {
+		h264Vui.PicStructPresentFlag = bs.GetBit()
+	}
+	if bs.RemainBits() > 0 {
+		h264Vui.BitstreamRestrictionFlag = bs.GetBit()
+	}
+	// TODO: Parse the bitstream restriction parameters.
 }
 
 func (h264Hrd *H264HrdParameters) Decode(bs *BitStream) {
