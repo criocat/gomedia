@@ -182,12 +182,24 @@ func (demuxer *AACTagDemuxer) Decode(data []byte) error {
     if err != nil {
         return err
     }
+    if atag.SoundFormat != uint8(FLV_AAC) {
+        return errors.New("unexpected AAC sound format")
+    }
     data = data[2:]
-    if atag.AACPacketType == AAC_SEQUENCE_HEADER {
+    switch atag.AACPacketType {
+    case AAC_SEQUENCE_HEADER:
+        if len(data) < 2 {
+            return errors.New("truncated AAC decoder configuration")
+        }
         demuxer.asc = make([]byte, len(data))
         copy(demuxer.asc, data)
-    } else {
-        adts, err := codec.ConvertASCToADTS(demuxer.asc, len(data)+7)
+    case AAC_RAW:
+        const adtsHeaderSize = 7
+        const maxADTSFrameLength = (1 << 13) - 1
+        if len(data) == 0 || len(data) > maxADTSFrameLength-adtsHeaderSize {
+            return errors.New("invalid AAC payload length for ADTS")
+        }
+        adts, err := codec.ConvertASCToADTS(demuxer.asc, len(data)+adtsHeaderSize)
         if err != nil {
             return err
         }
@@ -195,6 +207,8 @@ func (demuxer *AACTagDemuxer) Decode(data []byte) error {
         if demuxer.onframe != nil {
             demuxer.onframe(codec.CODECID_AUDIO_AAC, adts_frame)
         }
+    default:
+        return errors.New("unsupported AAC packet type")
     }
     return nil
 }
