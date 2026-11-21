@@ -36,6 +36,30 @@ func TestCovertRbspToSodb(t *testing.T) {
 	}
 }
 
+func TestMP3ChannelCount(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mode     byte
+		channels int
+	}{
+		{"stereo", 0b00, 2},
+		{"joint-stereo", 0b01, 2},
+		{"dual-channel", 0b10, 2},
+		{"mono", 0b11, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// MPEG-1 Layer III, 128 kb/s, 44.1 kHz.
+			header, err := DecodeMp3Head([]byte{0xff, 0xfb, 0x90, tc.mode << 6})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := header.GetChannelCount(); got != tc.channels {
+				t.Fatalf("channel count = %d, want %d", got, tc.channels)
+			}
+		})
+	}
+}
+
 func TestFindStartCode(t *testing.T) {
 	type args struct {
 		nalu   []byte
