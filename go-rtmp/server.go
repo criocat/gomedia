@@ -111,9 +111,11 @@ type RtmpServerHandle struct {
     wndAckSize     uint32
     peerWndAckSize uint32
     videoDemuxer   flv.VideoTagDemuxer
+    videoCodec     flv.FLV_VIDEO_CODEC_ID
     audioDemuxer   flv.AudioTagDemuxer
     videoMuxer     flv.AVTagMuxer
     audioMuxer     flv.AVTagMuxer
+    videoWriteCodec codec.CodecID
     onframe        OnFrame
     output         OutputCB
     onRelease      OnReleaseStream
@@ -237,7 +239,11 @@ func (server *RtmpServerHandle) WriteAudio(cid codec.CodecID, frame []byte, pts,
 }
 
 func (server *RtmpServerHandle) WriteVideo(cid codec.CodecID, frame []byte, pts, dts uint32) error {
+    if server.videoMuxer != nil && server.videoWriteCodec != cid {
+        return errors.New("outgoing video codec changed; reconnect required")
+    }
     if server.videoMuxer == nil {
+        server.videoWriteCodec = cid
         server.videoMuxer = flv.CreateVideoMuxer(flv.CovertCodecId2FlvVideoCodecId(cid))
     }
     if server.videoChan == nil {
@@ -329,13 +335,14 @@ func (server *RtmpServerHandle) handleCommand(data []byte) error {
 
 func (server *RtmpServerHandle) handleConnect(data []byte) error {
     _, objs := decodeAmf0(data)
-    if len(objs) > 0 {
-        for _, item := range objs[0].items {
-            if item.name == "app" {
-                server.app = string(item.value.value.([]byte))
-            } else if item.name == "tcUrl" {
-                server.tcUrl = string(item.value.value.([]byte))
-            }
+    if len(objs) == 0 {
+        return errors.New("invalid AMF0 connect object")
+    }
+    for _, item := range objs[0].items {
+        if item.name == "app" {
+            server.app = string(item.value.value.([]byte))
+        } else if item.name == "tcUrl" {
+            server.tcUrl = string(item.value.value.([]byte))
         }
     }
 
@@ -439,13 +446,20 @@ func (server *RtmpServerHandle) handlePublish(data []byte) error {
 }
 
 func (server *RtmpServerHandle) handleVideoMessage(msg *rtmpMessage) error {
+    cid := flv.GetFLVVideoCodecId(msg.msg)
+    if len(msg.msg) < 5 || (cid != flv.FLV_AVC && cid != flv.FLV_HEVC) {
+        return errors.New("invalid or unsupported RTMP video header")
+    }
     if server.videoDemuxer == nil {
-        server.videoDemuxer = flv.CreateFlvVideoTagHandle(flv.GetFLVVideoCodecId(msg.msg))
+        server.videoCodec = cid
+        server.videoDemuxer = flv.CreateFlvVideoTagHandle(cid)
         server.videoDemuxer.OnFrame(func(codecid codec.CodecID, frame []byte, cts int) {
             dts := server.timestamp
             pts := dts + uint32(cts)
             server.onframe(codecid, pts, dts, frame)
         })
+    } else if server.videoCodec != cid {
+        return errors.New("video codec changed; reconnect required")
     }
     return server.videoDemuxer.Decode(msg.msg)
 }

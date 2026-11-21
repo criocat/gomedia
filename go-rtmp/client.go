@@ -38,9 +38,11 @@ type RtmpClient struct {
 	onerror        OnError
 	onstateChange  OnStateChange
 	videoDemuxer   flv.VideoTagDemuxer
+	videoCodec     flv.FLV_VIDEO_CODEC_ID
 	audioDemuxer   flv.AudioTagDemuxer
 	videoMuxer     flv.AVTagMuxer
 	audioMuxer     flv.AVTagMuxer
+	videoWriteCodec codec.CodecID
 	timestamp      uint32
 	lastMethod     RtmpConnectCmd
 	lastMethodTid  int
@@ -254,7 +256,11 @@ func (cli *RtmpClient) WriteAudio(cid codec.CodecID, frame []byte, pts, dts uint
 }
 
 func (cli *RtmpClient) WriteVideo(cid codec.CodecID, frame []byte, pts, dts uint32) error {
+	if cli.videoMuxer != nil && cli.videoWriteCodec != cid {
+		return errors.New("outgoing video codec changed; reconnect required")
+	}
 	if cli.videoMuxer == nil {
+		cli.videoWriteCodec = cid
 		cli.videoMuxer = flv.CreateVideoMuxer(flv.CovertCodecId2FlvVideoCodecId(cid))
 	}
 	if cli.videoChan == nil {
@@ -366,13 +372,20 @@ func (cli *RtmpClient) handleCommandRes(data []byte) error {
 }
 
 func (cli *RtmpClient) handleVideoMessage(msg *rtmpMessage) error {
+	cid := flv.GetFLVVideoCodecId(msg.msg)
+	if len(msg.msg) < 5 || (cid != flv.FLV_AVC && cid != flv.FLV_HEVC) {
+		return errors.New("invalid or unsupported RTMP video header")
+	}
 	if cli.videoDemuxer == nil {
-		cli.videoDemuxer = flv.CreateFlvVideoTagHandle(flv.GetFLVVideoCodecId(msg.msg))
+		cli.videoCodec = cid
+		cli.videoDemuxer = flv.CreateFlvVideoTagHandle(cid)
 		cli.videoDemuxer.OnFrame(func(codecid codec.CodecID, frame []byte, cts int) {
 			dts := cli.timestamp
 			pts := dts + uint32(cts)
 			cli.onframe(codecid, pts, dts, frame)
 		})
+	} else if cli.videoCodec != cid {
+		return errors.New("video codec changed; reconnect required")
 	}
 	return cli.videoDemuxer.Decode(msg.msg)
 }

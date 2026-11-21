@@ -12,6 +12,7 @@ func makeConnect(app, tcurl string) []byte {
             {name: "capabilities", value: makeNumberItem(15)},
             {name: "audioCodecs", value: makeNumberItem(4071)},
             {name: "videoCodecs", value: makeNumberItem(252)},
+            {name: "fourCcList", value: amf0Item{amfType: AMF0_STRICT_ARRAY, value: []amf0Item{makeStringItem("hvc1")}}},
         },
     }
     msg := command.encode()

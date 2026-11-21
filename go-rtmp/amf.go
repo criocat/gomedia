@@ -68,6 +68,14 @@ func (amf *amf0Item) encode() []byte {
 	case AMF0_REFERENCE:
 	case AMF0_ECMA_ARRAY:
 	case AMF0_STRICT_ARRAY:
+		values := amf.value.([]amf0Item)
+		data := make([]byte, 5)
+		data[0] = byte(AMF0_STRICT_ARRAY)
+		binary.BigEndian.PutUint32(data[1:], uint32(len(values)))
+		for _, value := range values {
+			data = append(data, value.encode()...)
+		}
+		return data
 	case AMF0_DATE:
 	case AMF0_LONG_STRING:
 	case AMF0_UNSUPPORTED:
@@ -144,7 +152,7 @@ func (amf *amf0Item) decode(data []byte) int {
 			valueItem := &amf0Item{}
 			valueLength := valueItem.decode(data[pos:])
 			if valueLength == 0 {
-				return pos
+				return 0
 			}
 			amf.value.(map[string]interface{})[key] = valueItem.value
 			pos += valueLength
@@ -168,10 +176,41 @@ func (amf *amf0Item) decode(data []byte) int {
 			return 1
 		}
 		return 5
+	case AMF0_STRICT_ARRAY:
+		return amf.decodeStringArray(data)
 	default:
 		panic(fmt.Sprintf("unsupport amf type %d", amf.amfType))
 	}
 	return 1
+}
+
+// Enhanced RTMP fourCcList uses an AMF0 strict array of strings.
+func (amf *amf0Item) decodeStringArray(data []byte) int {
+	if len(data) < 5 {
+		return 0
+	}
+	count := binary.BigEndian.Uint32(data[1:5])
+	// Each encoded string occupies at least three bytes.
+	if uint64(count) > uint64((len(data)-5)/3) {
+		return 0
+	}
+
+	pos := 5
+	var values []amf0Item
+	for i := uint32(0); i < count; i++ {
+		if pos == len(data) || AMF0_DATA_TYPE(data[pos]) != AMF0_STRING {
+			return 0
+		}
+		var item amf0Item
+		size := item.decode(data[pos:])
+		if size < 3 {
+			return 0
+		}
+		pos += size
+		values = append(values, item)
+	}
+	amf.value = values
+	return pos
 }
 
 func makeStringItem(str string) amf0Item {
@@ -227,6 +266,9 @@ func (object *amfObject) decode(data []byte) int {
 	data = data[1:]
 	isArray := false
 	for len(data) > 0 {
+		if len(data) < 3 {
+			return 0
+		}
 		if data[0] == 0x00 && data[1] == 0x00 && data[2] == byte(AMF0_OBJECT_END) {
 			total += 3
 			if isArray {
@@ -236,10 +278,16 @@ func (object *amfObject) decode(data []byte) int {
 				break
 			}
 		}
-		length := binary.BigEndian.Uint16(data)
+		length := int(binary.BigEndian.Uint16(data))
+		if length >= len(data)-2 {
+			return 0
+		}
 		name := string(data[2 : 2+length])
 		item := amf0Item{}
 		l := item.decode(data[2+length:])
+		if l == 0 {
+			return 0
+		}
 		if item.amfType == AMF0_ECMA_ARRAY {
 			isArray = true
 		} else {
@@ -249,8 +297,8 @@ func (object *amfObject) decode(data []byte) int {
 			}
 			object.items = append(object.items, obj)
 		}
-		data = data[2+int(length)+l:]
-		total += 2 + int(length) + l
+		data = data[2+length+l:]
+		total += 2 + length + l
 	}
 	return total
 }
@@ -264,11 +312,17 @@ func decodeAmf0(data []byte) (items []amf0Item, objs []amfObject) {
 		case AMF0_OBJECT:
 			obj := amfObject{}
 			l := obj.decode(data)
+			if l == 0 {
+				return nil, nil
+			}
 			data = data[l:]
 			objs = append(objs, obj)
 		default:
 			item := amf0Item{}
 			l := item.decode(data)
+			if l == 0 {
+				return nil, nil
+			}
 			data = data[l:]
 			items = append(items, item)
 		}
