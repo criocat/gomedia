@@ -6,6 +6,9 @@ import (
     "io"
 )
 
+// mp4EpochOffset is the number of seconds from 1904-01-01 UTC to the Unix epoch.
+const mp4EpochOffset = 2082844800
+
 const (
     BasicBoxLen = 8
     FullBoxLen  = 12

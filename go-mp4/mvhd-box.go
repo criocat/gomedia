@@ -42,11 +42,11 @@ type MovieHeaderBox struct {
 }
 
 func NewMovieHeaderBox() *MovieHeaderBox {
-    _, offset := time.Now().Zone()
+    now := uint64(time.Now().Unix() + mp4EpochOffset)
     return &MovieHeaderBox{
         Box:               NewFullBox([4]byte{'m', 'v', 'h', 'd'}, 0),
-        Creation_time:     uint64(time.Now().Unix() + int64(offset) + 0x7C25B080),
-        Modification_time: uint64(time.Now().Unix() + int64(offset) + 0x7C25B080),
+        Creation_time:     now,
+        Modification_time: now,
         Timescale:         1000,
         Rate:              0x00010000,
         Volume:            0x0100,

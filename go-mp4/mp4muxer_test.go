@@ -8,10 +8,43 @@ import (
 	"os"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/yapingcat/gomedia/go-codec"
 	"github.com/yapingcat/gomedia/go-mpeg2"
 )
+
+func TestMP4HeaderTimesUseUTC(t *testing.T) {
+	epoch := time.Date(1904, time.January, 1, 0, 0, 0, 0, time.UTC).Unix()
+	for _, zone := range []*time.Location{
+		time.FixedZone("UTC+3", 3*60*60),
+		time.FixedZone("UTC-5", -5*60*60),
+	} {
+		t.Run(zone.String(), func(t *testing.T) {
+			original := time.Local
+			time.Local = zone
+			t.Cleanup(func() { time.Local = original })
+
+			before := time.Now().Unix() - epoch
+			for _, box := range []struct {
+				name   string
+				encode func() (int, []byte)
+			}{
+				{"mvhd", NewMovieHeaderBox().Encode},
+				{"mdhd", NewMediaHeaderBox().Encode},
+				{"tkhd", NewTrackHeaderBox().Encode},
+			} {
+				_, data := box.encode()
+				after := time.Now().Unix() - epoch
+				created := int64(binary.BigEndian.Uint32(data[12:16]))
+				modified := int64(binary.BigEndian.Uint32(data[16:20]))
+				if created < before || created > after || modified != created {
+					t.Errorf("%s: creation=%d, modification=%d, want both in [%d, %d]", box.name, created, modified, before, after)
+				}
+			}
+		})
+	}
+}
 
 func TestMP4TrackDurationWithBackwardDTS(t *testing.T) {
 	for _, tc := range []struct {
