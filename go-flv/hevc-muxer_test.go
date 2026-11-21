@@ -9,6 +9,17 @@ import (
 	"github.com/yapingcat/gomedia/go-codec"
 )
 
+func TestHEVCMuxerUpdatesSequenceHeader(t *testing.T) {
+	vps, initialSPS, updatedSPS, pps, idr := testHEVCParameterSets()
+	initialVPS := append([]byte(nil), vps...)
+	// libx265 level-idc=2 sets general_level_idc to 60 in these NAL units.
+	initialVPS[24] = 60
+	initialSPS[21] = 60
+	initial := bytes.Join([][]byte{initialVPS, initialSPS, pps}, nil)
+	updated := bytes.Join([][]byte{vps, updatedSPS, pps}, nil)
+	checkVideoSequenceUpdate(t, FLV_HEVC, initial, updated, idr)
+}
+
 func TestHEVCMuxerSharedInput(t *testing.T) {
 	frame := testHEVCFirstFrame(t)
 	snapshot := append([]byte(nil), frame...)

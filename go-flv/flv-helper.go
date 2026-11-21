@@ -24,6 +24,12 @@ func signedCompositionTime(data []byte) int32 {
     return int32(GetUint24(data)<<8) >> 8
 }
 
+func appendLengthPrefixedNAL(dst, payload []byte) []byte {
+    size := uint32(len(payload))
+    dst = append(dst, byte(size>>24), byte(size>>16), byte(size>>8), byte(size))
+    return append(dst, payload...)
+}
+
 // Read a bounded Exp-Golomb parameter set ID from the NAL payload.
 func readParameterSetID(bs *codec.BitStream, maxID uint64) (uint64, bool) {
     for zeros := 0; bs.RemainBits() > 0; zeros++ {

@@ -21,14 +21,76 @@ func TestAVCSignedCompositionTime(t *testing.T) {
 	}
 }
 
-func TestAVCInBandParameterSets(t *testing.T) {
+func testAVCParameterSets() (initialSPS, updatedSPS, pps, idr []byte) {
 	// libx264 SPS for 16x16 and 32x16 with the same ID and PPS.
-	initialSPS := []byte{0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xda, 0x7b, 0x01, 0x10,
+	initialSPS = []byte{0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xda, 0x7b, 0x01, 0x10,
 		0x00, 0x00, 0x03, 0x00, 0x10, 0x00, 0x00, 0x03, 0x00, 0x20, 0xf1, 0x22, 0x6a}
-	updatedSPS := []byte{0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xda, 0x2e, 0xc0, 0x44,
+	updatedSPS = []byte{0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xda, 0x2e, 0xc0, 0x44,
 		0x00, 0x00, 0x03, 0x00, 0x04, 0x00, 0x00, 0x03, 0x00, 0x08, 0x3c, 0x48, 0x9a, 0x80}
-	pps := []byte{0, 0, 0, 1, 0x68, 0xce, 0x0f, 0xc8}
-	idr := []byte{0, 0, 0, 1, 0x65, 0x88, 0x84, 0x3a, 0x26, 0x28, 0x00, 0x09, 0x02, 0xc9, 0xe0}
+	pps = []byte{0, 0, 0, 1, 0x68, 0xce, 0x0f, 0xc8}
+	idr = []byte{0, 0, 0, 1, 0x65, 0x88, 0x84, 0x3a, 0x26, 0x28, 0x00, 0x09, 0x02, 0xc9, 0xe0}
+	return
+}
+
+func TestAVCMuxerUpdatesSequenceHeader(t *testing.T) {
+	initialSPS, updatedSPS, pps, idr := testAVCParameterSets()
+	t.Run("resolution", func(t *testing.T) {
+		initial := bytes.Join([][]byte{initialSPS, pps}, nil)
+		updated := bytes.Join([][]byte{updatedSPS, pps}, nil)
+		checkVideoSequenceUpdate(t, FLV_AVC, initial, updated, idr)
+	})
+	t.Run("PPS", func(t *testing.T) {
+		// libx264 with chroma-qp-offset=2 produces a different PPS with the same ID.
+		updatedPPS := []byte{0, 0, 0, 1, 0x68, 0xce, 0x0f, 0x24, 0x80}
+		initial := bytes.Join([][]byte{updatedSPS, pps}, nil)
+		updated := bytes.Join([][]byte{updatedSPS, updatedPPS}, nil)
+		checkVideoSequenceUpdate(t, FLV_AVC, initial, updated, idr)
+	})
+}
+
+func checkVideoSequenceUpdate(t *testing.T, cid FLV_VIDEO_CODEC_ID, initial, updated, idr []byte) {
+	t.Helper()
+	muxer := CreateVideoMuxer(cid)
+	start := muxer.Write(append([]byte(nil), initial...), 0, 0)
+	if len(start) != 1 {
+		t.Fatalf("initial parameter sets produced %d tags, want one header", len(start))
+	}
+	frame := bytes.Join([][]byte{updated, idr}, nil)
+	tags := muxer.Write(append([]byte(nil), frame...), 35, 40)
+	if len(tags) != 2 {
+		t.Fatalf("changed parameters produced %d tags, want header and frame", len(tags))
+	}
+	var header VideoTag
+	header.Decode(tags[0])
+	if header.AVCPacketType != PacketTypeSequenceStart || bytes.Equal(tags[0], start[0]) {
+		t.Fatal("first tag must carry the updated configuration")
+	}
+	want := CreateVideoMuxer(cid).Write(append([]byte(nil), updated...), 0, 0)
+	if len(want) != 1 || !bytes.Equal(tags[0], want[0]) {
+		t.Fatal("updated header differs from a fresh header for the same parameters")
+	}
+	header.Decode(tags[1])
+	if header.AVCPacketType != PacketTypeCodedFrames || header.CompositionTime != -5 {
+		t.Fatal("second tag must carry the frame with its composition time")
+	}
+	var repeated []byte
+	codec.SplitFrame(frame, func(nalu []byte) bool {
+		repeated = append(repeated, 0, 0, 1)
+		repeated = append(repeated, nalu...)
+		return true
+	})
+	tags = muxer.Write(repeated, 75, 80)
+	if len(tags) != 1 {
+		t.Fatalf("repeated parameters produced %d tags, want one frame", len(tags))
+	}
+	header.Decode(tags[0])
+	if header.AVCPacketType != PacketTypeCodedFrames || header.CompositionTime != -5 {
+		t.Fatal("repeated parameters must only produce the frame")
+	}
+}
+
+func TestAVCInBandParameterSets(t *testing.T) {
+	initialSPS, updatedSPS, pps, idr := testAVCParameterSets()
 	config, err := codec.CreateH264AVCCExtradata([][]byte{initialSPS}, [][]byte{pps})
 	if err != nil {
 		t.Fatal(err)

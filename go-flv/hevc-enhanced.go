@@ -12,10 +12,7 @@ import (
 // without replacing the start code in the caller's buffer.
 func appendHEVCNAL(dst, nalu []byte) []byte {
 	start, sc := codec.FindStartCode(nalu, 0)
-	payload := nalu[start+int(sc):]
-	size := uint32(len(payload))
-	dst = append(dst, byte(size>>24), byte(size>>16), byte(size>>8), byte(size))
-	return append(dst, payload...)
+	return appendLengthPrefixedNAL(dst, nalu[start+int(sc):])
 }
 
 func encodeHEVCVideoHeader(vtag VideoTag) []byte {
@@ -31,22 +28,20 @@ func encodeHEVCVideoHeader(vtag VideoTag) []byte {
 	return tag
 }
 
-func hasHEVCParameterSets(hvcc *codec.HEVCRecordConfiguration) bool {
-	var vps, sps, pps bool
-	for _, array := range hvcc.Arrays {
-		if len(array.NalUnits) == 0 {
-			continue
+func encodeHEVCConfiguration(parameterSets []byte) ([]byte, error) {
+	hvcc := codec.NewHEVCRecordConfiguration()
+	codec.SplitFrameWithStartCode(parameterSets, func(nalu []byte) bool {
+		switch codec.H265NaluType(nalu) {
+		case codec.H265_NAL_VPS:
+			hvcc.UpdateVPS(nalu)
+		case codec.H265_NAL_SPS:
+			hvcc.UpdateSPS(nalu)
+		case codec.H265_NAL_PPS:
+			hvcc.UpdatePPS(nalu)
 		}
-		switch array.NAL_unit_type {
-		case 32:
-			vps = true
-		case 33:
-			sps = true
-		case 34:
-			pps = true
-		}
-	}
-	return vps && sps && pps
+		return true
+	})
+	return hvcc.Encode()
 }
 
 func (demuxer *HevcTagDemuxer) decodeHEVCTag(data []byte) error {
@@ -170,9 +165,9 @@ func readHEVCParameterSetKey(nalu []byte) (hevcParameterSetKey, bool) {
 	return key, ok
 }
 
-func mergeHEVCParameterSets(cached []byte, updates [][]byte) []byte {
+func mergeHEVCParameterSets(cached []byte, updates [][]byte) ([]byte, bool) {
 	if len(updates) == 0 {
-		return cached
+		return cached, false
 	}
 	var nalus [][]byte
 	positions := make(map[hevcParameterSetKey]int)
@@ -201,14 +196,14 @@ func mergeHEVCParameterSets(cached []byte, updates [][]byte) []byte {
 		changed = true
 	}
 	if !changed {
-		return cached
+		return cached, false
 	}
 	merged := make([]byte, 0, len(cached))
 	for _, nalu := range nalus {
 		merged = append(merged, 0, 0, 0, 1)
 		merged = append(merged, nalu...)
 	}
-	return merged
+	return merged, true
 }
 
 func (demuxer *HevcTagDemuxer) decodeNalus(data []byte, cts int32, enhanced bool) error {
@@ -256,7 +251,7 @@ func (demuxer *HevcTagDemuxer) decodeNalus(data []byte, cts int32, enhanced bool
 		}
 		demuxer.naluLengthSize = lengthSize
 	}
-	demuxer.SpsPpsVps = mergeHEVCParameterSets(demuxer.SpsPpsVps, parameterSets)
+	demuxer.SpsPpsVps, _ = mergeHEVCParameterSets(demuxer.SpsPpsVps, parameterSets)
 	if irap && (!vps || !sps || !pps) {
 		// Allocate a separate frame, queued frames must not alias cached VPS/SPS/PPS.
 		prefixed := make([]byte, 0, len(demuxer.SpsPpsVps)+len(frame))

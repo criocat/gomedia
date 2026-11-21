@@ -72,7 +72,6 @@ type AVCMuxer struct {
     spsset map[uint64][]byte
     ppsset map[uint64][]byte
     cache  []byte
-    first  bool
 }
 
 func NewAVCMuxer() *AVCMuxer {
@@ -80,34 +79,30 @@ func NewAVCMuxer() *AVCMuxer {
         spsset: make(map[uint64][]byte),
         ppsset: make(map[uint64][]byte),
         cache:  make([]byte, 0, 1024),
-        first:  true,
     }
 }
 
 func (muxer *AVCMuxer) Write(frames []byte, pts uint32, dts uint32) [][]byte {
     var vcl bool = false
     var isKey bool = false
+    configurationChanged := false
     codec.SplitFrameWithStartCode(frames, func(nalu []byte) bool {
         naltype := codec.H264NaluType(nalu)
         switch naltype {
-        case codec.H264_NAL_SPS:
-            spsid := codec.GetSPSIdWithStartCode(nalu)
-            s, found := muxer.spsset[spsid]
-            if !found || !bytes.Equal(s, nalu) {
-                naluCopy := make([]byte, len(nalu))
-                copy(naluCopy, nalu)
-                muxer.spsset[spsid] = naluCopy
-                muxer.cache = append(muxer.cache, codec.ConvertAnnexBToAVCC(nalu)...)
+        case codec.H264_NAL_SPS, codec.H264_NAL_PPS:
+            start, sc := codec.FindStartCode(nalu, 0)
+            payload := nalu[start+int(sc):]
+            var sets map[uint64][]byte
+            var id uint64
+            if naltype == codec.H264_NAL_SPS {
+                sets, id = muxer.spsset, codec.GetSPSId(payload)
+            } else {
+                sets, id = muxer.ppsset, codec.GetPPSId(payload)
             }
-        case codec.H264_NAL_PPS:
-            ppsid := codec.GetPPSIdWithStartCode(nalu)
-            muxer.ppsset[ppsid] = nalu
-            s, found := muxer.ppsset[ppsid]
-            if !found || !bytes.Equal(s, nalu) {
-                naluCopy := make([]byte, len(nalu))
-                copy(naluCopy, nalu)
-                muxer.ppsset[ppsid] = naluCopy
-                muxer.cache = append(muxer.cache, codec.ConvertAnnexBToAVCC(nalu)...)
+            if cached := sets[id]; cached == nil || !bytes.Equal(cached[4:], payload) {
+                sets[id] = append([]byte{0, 0, 0, 1}, payload...)
+                muxer.cache = appendLengthPrefixedNAL(muxer.cache, payload)
+                configurationChanged = true
             }
         default:
             if naltype <= codec.H264_NAL_I_SLICE {
@@ -121,22 +116,17 @@ func (muxer *AVCMuxer) Write(frames []byte, pts uint32, dts uint32) [][]byte {
         return true
     })
     var tags [][]byte
-    if muxer.first && len(muxer.ppsset) > 0 && len(muxer.spsset) > 0 {
-        spss := make([][]byte, len(muxer.spsset))
-        idx := 0
+    if configurationChanged && len(muxer.ppsset) > 0 && len(muxer.spsset) > 0 {
+        spss := make([][]byte, 0, len(muxer.spsset))
         for _, sps := range muxer.spsset {
-            spss[idx] = sps
-            idx++
+            spss = append(spss, sps)
         }
-        idx = 0
-        ppss := make([][]byte, len(muxer.ppsset))
+        ppss := make([][]byte, 0, len(muxer.ppsset))
         for _, pps := range muxer.ppsset {
-            ppss[idx] = pps
-            idx++
+            ppss = append(ppss, pps)
         }
         extraData, _ := codec.CreateH264AVCCExtradata(spss, ppss)
         tags = append(tags, WriteVideoTag(extraData, true, FLV_AVC, 0, true))
-        muxer.first = false
     }
 
     if vcl {
@@ -147,31 +137,27 @@ func (muxer *AVCMuxer) Write(frames []byte, pts uint32, dts uint32) [][]byte {
 }
 
 type HevcMuxer struct {
-    hvcc  *codec.HEVCRecordConfiguration
-    cache []byte
-    first bool
+    parameterSets []byte
+    cache         []byte
+    sequenceSent  bool
 }
 
 func NewHevcMuxer() *HevcMuxer {
     return &HevcMuxer{
-        hvcc:  codec.NewHEVCRecordConfiguration(),
         cache: make([]byte, 0, 1024),
-        first: true,
     }
 }
 
 func (muxer *HevcMuxer) Write(frames []byte, pts uint32, dts uint32) [][]byte {
     var vcl bool = false
     var isKey bool = false
+    var updates [][]byte
     codec.SplitFrameWithStartCode(frames, func(nalu []byte) bool {
         naltype := codec.H265NaluType(nalu)
         switch naltype {
-        case codec.H265_NAL_SPS:
-            muxer.hvcc.UpdateSPS(nalu)
-        case codec.H265_NAL_PPS:
-            muxer.hvcc.UpdatePPS(nalu)
-        case codec.H265_NAL_VPS:
-            muxer.hvcc.UpdateVPS(nalu)
+        case codec.H265_NAL_VPS, codec.H265_NAL_SPS, codec.H265_NAL_PPS:
+            start, sc := codec.FindStartCode(nalu, 0)
+            updates = append(updates, nalu[start+int(sc):])
         default:
             if naltype >= 16 && naltype <= 21 {
                 isKey = true
@@ -184,13 +170,16 @@ func (muxer *HevcMuxer) Write(frames []byte, pts uint32, dts uint32) [][]byte {
         return true
     })
     var tags [][]byte
-    if muxer.first && hasHEVCParameterSets(muxer.hvcc) {
-        extraData, _ := muxer.hvcc.Encode()
-        tags = append(tags, WriteVideoTag(extraData, true, FLV_HEVC, 0, true))
-        muxer.first = false
+    var configurationChanged bool
+    muxer.parameterSets, configurationChanged = mergeHEVCParameterSets(muxer.parameterSets, updates)
+    if configurationChanged {
+        if extraData, err := encodeHEVCConfiguration(muxer.parameterSets); err == nil {
+            tags = append(tags, WriteVideoTag(extraData, true, FLV_HEVC, 0, true))
+            muxer.sequenceSent = true
+        }
     }
     if vcl {
-        if !muxer.first {
+        if muxer.sequenceSent {
             tags = append(tags, WriteVideoTag(muxer.cache, isKey, FLV_HEVC, int32(pts-dts), false))
         }
         // Drop an early frame if VPS/SPS/PPS are still missing. Do not merge
