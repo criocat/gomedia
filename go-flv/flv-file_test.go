@@ -1,6 +1,7 @@
 package flv
 
 import (
+	"bytes"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -17,6 +18,46 @@ func TestAVCSignedCompositionTime(t *testing.T) {
 		if tag.CompositionTime != cts {
 			t.Errorf("CompositionTime = %d, want %d", tag.CompositionTime, cts)
 		}
+	}
+}
+
+func TestAVCInBandParameterSets(t *testing.T) {
+	// libx264 SPS for 16x16 and 32x16 with the same ID and PPS.
+	initialSPS := []byte{0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xda, 0x7b, 0x01, 0x10,
+		0x00, 0x00, 0x03, 0x00, 0x10, 0x00, 0x00, 0x03, 0x00, 0x20, 0xf1, 0x22, 0x6a}
+	updatedSPS := []byte{0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xda, 0x2e, 0xc0, 0x44,
+		0x00, 0x00, 0x03, 0x00, 0x04, 0x00, 0x00, 0x03, 0x00, 0x08, 0x3c, 0x48, 0x9a, 0x80}
+	pps := []byte{0, 0, 0, 1, 0x68, 0xce, 0x0f, 0xc8}
+	idr := []byte{0, 0, 0, 1, 0x65, 0x88, 0x84, 0x3a, 0x26, 0x28, 0x00, 0x09, 0x02, 0xc9, 0xe0}
+	config, err := codec.CreateH264AVCCExtradata([][]byte{initialSPS}, [][]byte{pps})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkInBandSPSUpdate(t, FLV_AVC, config, updatedSPS, idr, bytes.Join([][]byte{updatedSPS, pps, idr}, nil))
+}
+
+func checkInBandSPSUpdate(t *testing.T, cid FLV_VIDEO_CODEC_ID, config, sps, idr, want []byte) {
+	t.Helper()
+	demuxer := CreateFlvVideoTagHandle(cid)
+	var frame []byte
+	demuxer.OnFrame(func(_ codec.CodecID, payload []byte, _ int) { frame = payload })
+	if err := demuxer.Decode(WriteVideoTag(config, true, cid, 0, true)); err != nil {
+		t.Fatal(err)
+	}
+	updateNAL := codec.ConvertAnnexBToAVCC(append([]byte(nil), sps...))
+	update := WriteVideoTag(updateNAL, false, cid, 0, false)
+	if err := demuxer.Decode(update); err != nil {
+		t.Fatal(err)
+	}
+	for i := range update {
+		update[i] = 0
+	}
+	picture := codec.ConvertAnnexBToAVCC(append([]byte(nil), idr...))
+	if err := demuxer.Decode(WriteVideoTag(picture, true, cid, 0, false)); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(frame, want) {
+		t.Fatalf("keyframe = %x, want %x", frame, want)
 	}
 }
 

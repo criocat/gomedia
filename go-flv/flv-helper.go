@@ -24,6 +24,27 @@ func signedCompositionTime(data []byte) int32 {
     return int32(GetUint24(data)<<8) >> 8
 }
 
+// Read a bounded Exp-Golomb parameter set ID from the NAL payload.
+func readParameterSetID(bs *codec.BitStream, maxID uint64) (uint64, bool) {
+    for zeros := 0; bs.RemainBits() > 0; zeros++ {
+        id := (uint64(1) << zeros) - 1
+        if id > maxID {
+            break
+        }
+        if bs.GetBit() == 0 {
+            continue
+        }
+        if bs.RemainBits() < zeros {
+            break
+        }
+        if zeros > 0 {
+            id += bs.GetBits(zeros)
+        }
+        return id, id <= maxID
+    }
+    return 0, false
+}
+
 func CovertFlvVideoCodecId2MpegCodecId(cid FLV_VIDEO_CODEC_ID) codec.CodecID {
     if cid == FLV_AVC {
         return codec.CODECID_VIDEO_H264

@@ -1,6 +1,7 @@
 package flv
 
 import (
+    "bytes"
     "encoding/binary"
     "errors"
 
@@ -31,6 +32,32 @@ func (demuxer *AVCTagDemuxer) OnFrame(onframe OnVideoFrameCallBack) {
     demuxer.onframe = onframe
 }
 
+func (demuxer *AVCTagDemuxer) cacheParameterSet(nalu []byte) {
+    if len(nalu) < 6 {
+        return
+    }
+    sets, maxID := &demuxer.spss, uint64(31)
+    bs := codec.NewBitStream(codec.CovertRbspToSodb(nalu[5:]))
+    switch codec.H264NaluTypeWithoutStartCode(nalu[4:]) {
+    case codec.H264_NAL_SPS:
+        bs.SkipBits(24) // profile, constraints and level
+    case codec.H264_NAL_PPS:
+        sets, maxID = &demuxer.ppss, 255
+    default:
+        return
+    }
+    id, ok := readParameterSetID(bs, maxID)
+    if !ok {
+        return
+    }
+    if *sets == nil {
+        *sets = make(map[uint64][]byte)
+    }
+    if !bytes.Equal((*sets)[id], nalu) {
+        (*sets)[id] = append([]byte(nil), nalu...)
+    }
+}
+
 func (demuxer *AVCTagDemuxer) Decode(data []byte) error {
 
     if len(data) < 5 {
@@ -43,21 +70,16 @@ func (demuxer *AVCTagDemuxer) Decode(data []byte) error {
     if vtag.AVCPacketType == AVC_SEQUENCE_HEADER {
         tmpspss, tmpppss := codec.CovertExtradata(data)
         for _, sps := range tmpspss {
-            spsid := codec.GetSPSId(sps)
-            tmpsps := make([]byte, len(sps))
-            copy(tmpsps, sps)
-            demuxer.spss[spsid] = tmpsps
+            demuxer.cacheParameterSet(sps)
         }
         for _, pps := range tmpppss {
-            ppsid := codec.GetPPSId(pps)
-            tmppps := make([]byte, len(pps))
-            copy(tmppps, pps)
-            demuxer.ppss[ppsid] = tmppps
+            demuxer.cacheParameterSet(pps)
         }
     } else {
         var hassps bool
         var haspps bool
         var idr bool
+        var parameterSets [][]byte
         tmpdata := data
         for len(tmpdata) > 0 {
             naluSize := binary.BigEndian.Uint32(tmpdata)
@@ -67,8 +89,10 @@ func (demuxer *AVCTagDemuxer) Decode(data []byte) error {
                 idr = true
             } else if naluType == codec.H264_NAL_SPS {
                 hassps = true
+                parameterSets = append(parameterSets, tmpdata[:4+naluSize])
             } else if naluType == codec.H264_NAL_PPS {
                 haspps = true
+                parameterSets = append(parameterSets, tmpdata[:4+naluSize])
             } else if naluType < codec.H264_NAL_I_SLICE {
                 sh := codec.SliceHeader{}
                 sh.Decode(codec.NewBitStream(tmpdata[5:]))
@@ -77,6 +101,9 @@ func (demuxer *AVCTagDemuxer) Decode(data []byte) error {
                 }
             }
             tmpdata = tmpdata[4+naluSize:]
+        }
+        for _, nalu := range parameterSets {
+            demuxer.cacheParameterSet(nalu)
         }
 
         if idr && (!hassps || !haspps) {

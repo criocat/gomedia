@@ -1,6 +1,7 @@
 package flv
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 
@@ -135,6 +136,81 @@ func (demuxer *HevcTagDemuxer) decodeHEVCConfiguration(data []byte) error {
 	return nil
 }
 
+type hevcParameterSetKey struct {
+	nalType codec.H265_NAL_TYPE
+	id      uint64
+}
+
+func readHEVCParameterSetKey(nalu []byte) (hevcParameterSetKey, bool) {
+	if len(nalu) < 3 {
+		return hevcParameterSetKey{}, false
+	}
+	key := hevcParameterSetKey{nalType: codec.H265NaluTypeWithoutStartCode(nalu)}
+	if key.nalType == codec.H265_NAL_VPS {
+		key.id = uint64(nalu[2] >> 4)
+		return key, true
+	}
+	if key.nalType != codec.H265_NAL_SPS && key.nalType != codec.H265_NAL_PPS {
+		return key, false
+	}
+	bs := codec.NewBitStream(codec.CovertRbspToSodb(nalu[2:]))
+	maxID := uint64(63)
+	if key.nalType == codec.H265_NAL_SPS {
+		bs.SkipBits(4) // sps_video_parameter_set_id
+		maxSubLayersMinus1 := bs.Uint8(3)
+		bs.SkipBits(1) // sps_temporal_id_nesting_flag
+		if bs.RemainBits() < 96+2*int(maxSubLayersMinus1) {
+			return key, false
+		}
+		codec.Profile_tier_level(1, maxSubLayersMinus1, bs)
+		maxID = 15
+	}
+	id, ok := readParameterSetID(bs, maxID)
+	key.id = id
+	return key, ok
+}
+
+func mergeHEVCParameterSets(cached []byte, updates [][]byte) []byte {
+	if len(updates) == 0 {
+		return cached
+	}
+	var nalus [][]byte
+	positions := make(map[hevcParameterSetKey]int)
+	codec.SplitFrame(cached, func(nalu []byte) bool {
+		if key, ok := readHEVCParameterSetKey(nalu); ok {
+			positions[key] = len(nalus)
+		}
+		nalus = append(nalus, nalu)
+		return true
+	})
+	changed := false
+	for _, nalu := range updates {
+		key, ok := readHEVCParameterSetKey(nalu)
+		if !ok {
+			continue
+		}
+		if i, found := positions[key]; found {
+			if bytes.Equal(nalus[i], nalu) {
+				continue
+			}
+			nalus[i] = nalu
+		} else {
+			positions[key] = len(nalus)
+			nalus = append(nalus, nalu)
+		}
+		changed = true
+	}
+	if !changed {
+		return cached
+	}
+	merged := make([]byte, 0, len(cached))
+	for _, nalu := range nalus {
+		merged = append(merged, 0, 0, 0, 1)
+		merged = append(merged, nalu...)
+	}
+	return merged
+}
+
 func (demuxer *HevcTagDemuxer) decodeNalus(data []byte, cts int32, enhanced bool) error {
 	lengthSize := demuxer.naluLengthSize
 	legacyStartup := !enhanced && lengthSize == 0
@@ -148,7 +224,7 @@ func (demuxer *HevcTagDemuxer) decodeNalus(data []byte, cts int32, enhanced bool
 		return errors.New("empty HEVC frame")
 	}
 	var frame []byte
-	var parameterSets []byte
+	var parameterSets [][]byte
 	var irap, vps, sps, pps bool
 	for len(data) > 0 {
 		if len(data) < lengthSize {
@@ -167,11 +243,10 @@ func (demuxer *HevcTagDemuxer) decodeNalus(data []byte, cts int32, enhanced bool
 		vps = vps || nalType == codec.H265_NAL_VPS
 		sps = sps || nalType == codec.H265_NAL_SPS
 		pps = pps || nalType == codec.H265_NAL_PPS
-		offset := len(frame)
 		frame = append(frame, 0, 0, 0, 1)
 		frame = append(frame, data[:size]...)
-		if legacyStartup && nalType >= codec.H265_NAL_VPS && nalType <= codec.H265_NAL_PPS {
-			parameterSets = append(parameterSets, frame[offset:]...)
+		if nalType >= codec.H265_NAL_VPS && nalType <= codec.H265_NAL_PPS {
+			parameterSets = append(parameterSets, data[:size])
 		}
 		data = data[size:]
 	}
@@ -179,9 +254,10 @@ func (demuxer *HevcTagDemuxer) decodeNalus(data []byte, cts int32, enhanced bool
 		if !irap || !vps || !sps || !pps {
 			return errors.New("legacy HEVC startup requires a keyframe with VPS, SPS and PPS")
 		}
-		demuxer.SpsPpsVps = parameterSets
 		demuxer.naluLengthSize = lengthSize
-	} else if irap && (!vps || !sps || !pps) {
+	}
+	demuxer.SpsPpsVps = mergeHEVCParameterSets(demuxer.SpsPpsVps, parameterSets)
+	if irap && (!vps || !sps || !pps) {
 		// Allocate a separate frame, queued frames must not alias cached VPS/SPS/PPS.
 		prefixed := make([]byte, 0, len(demuxer.SpsPpsVps)+len(frame))
 		prefixed = append(prefixed, demuxer.SpsPpsVps...)
