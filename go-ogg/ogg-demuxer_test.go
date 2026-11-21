@@ -54,3 +54,21 @@ func TestDemuxer_Input(t *testing.T) {
         }
     })
 }
+
+func TestVP8PacketTimingSkipsEmptyPackets(t *testing.T) {
+    page := &oggPage{
+        granulePos: 10<<32 | 1<<30,
+        packets:    [][]byte{{0x10}, nil, {0x10}, {0x00}},
+    }
+    stream := &oggStream{currentPage: page}
+    var vp8 vp8Demuxer
+    // Visible frames count towards the remaining duration. Empty packets and
+    // invisible frames occupy an index but contribute zero.
+    want := []uint64{8, 9, 9, 10}
+    for i, packet := range page.packets {
+        _, pts, dts := vp8.packet(stream, packet)
+        if pts != want[i] || dts != want[i] {
+            t.Errorf("packet %d: PTS=%d DTS=%d, want %d", i, pts, dts, want[i])
+        }
+    }
+}

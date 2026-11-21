@@ -214,7 +214,10 @@ func (vp8 *vp8Demuxer) packet(stream *oggStream, packet []byte) (frame []byte, p
     }
     var duration uint64 = 0
     for i := int(vp8.pktIdx); i < len(stream.currentPage.packets); i++ {
-        duration += uint64((stream.currentPage.packets[i][0] >> 4) & 1)
+        candidate := stream.currentPage.packets[i]
+        if len(candidate) > 0 {
+            duration += uint64((candidate[0] >> 4) & 1)
+        }
     }
     vp8.lastpts = vp8.gptopts(stream.currentPage.granulePos) - duration
     frame = packet
