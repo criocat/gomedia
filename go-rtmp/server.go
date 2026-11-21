@@ -503,8 +503,12 @@ func (server *RtmpServerHandle) handleVideoMessage(msg *rtmpMessage) error {
 }
 
 func (server *RtmpServerHandle) handleAudioMessage(msg *rtmpMessage) error {
+    format, err := audioFormat(msg.msg)
+    if err != nil {
+        return err
+    }
     if server.audioDemuxer == nil {
-        server.audioDemuxer = flv.CreateAudioTagDemuxer(flv.FLV_SOUND_FORMAT((msg.msg[0] >> 4) & 0x0F))
+        server.audioDemuxer = flv.CreateAudioTagDemuxer(format)
         server.audioDemuxer.OnFrame(func(codecid codec.CodecID, frame []byte) {
             dts := server.timestamp
             pts := dts

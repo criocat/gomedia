@@ -232,3 +232,52 @@ func TestFlvReadH265(t *testing.T) {
 		}
 	})
 }
+
+func TestFLVAudioDemuxerRejectInvalidTags(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		format FLV_SOUND_FORMAT
+		codec  codec.CodecID
+	}{
+		{"G711A", FLV_G711A, codec.CODECID_AUDIO_G711A},
+		{"G711U", FLV_G711U, codec.CODECID_AUDIO_G711U},
+		{"MP3", FLV_MP3, codec.CODECID_AUDIO_MP3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			demuxer := CreateAudioTagDemuxer(tc.format)
+			tagHeader := byte(tc.format) << 4
+			demuxer.OnFrame(func(codec.CodecID, []byte) {
+				t.Error("invalid audio tag emitted a frame")
+			})
+			if err := demuxer.Decode([]byte{tagHeader}); err == nil {
+				t.Error("accepted a tag with an empty payload")
+			}
+			if err := demuxer.Decode([]byte{tagHeader ^ 0x10, 1}); err == nil {
+				t.Error("accepted a tag with a different sound format")
+			}
+
+			frames := 0
+			demuxer.OnFrame(func(cid codec.CodecID, payload []byte) {
+				frames++
+				if cid != tc.codec || !bytes.Equal(payload, []byte{1}) {
+					t.Fatalf("unexpected audio frame: codec=%v, payload=%x", cid, payload)
+				}
+			})
+			if err := demuxer.Decode([]byte{tagHeader, 1}); err != nil || frames != 1 {
+				t.Fatalf("valid audio tag: err=%v, frames=%d", err, frames)
+			}
+		})
+	}
+}
+
+func TestFLVReaderRejectEmptyAudioTag(t *testing.T) {
+	wire := []byte{
+		'F', 'L', 'V', 1, 4, 0, 0, 0, 9,
+		0, 0, 0, 0, // PreviousTagSize0
+		byte(AUDIO_TAG), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	}
+	reader := CreateFlvReader()
+	if err := reader.Input(wire); err == nil {
+		t.Fatal("accepted an audio tag with DataSize zero")
+	}
+}

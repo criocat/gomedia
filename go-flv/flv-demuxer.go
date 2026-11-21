@@ -230,15 +230,11 @@ func (demuxer *G711Demuxer) OnFrame(onframe OnAudioFrameCallBack) {
 }
 
 func (demuxer *G711Demuxer) Decode(data []byte) error {
-
-    if len(data) < 1 {
-        return errors.New("audio tag size < 1")
+    if len(data) < 2 {
+        return errors.New("empty audio payload")
     }
-
-    atag := AudioTag{}
-    err := atag.Decode(data[0:1])
-    if err != nil {
-        return err
+    if FLV_SOUND_FORMAT(data[0]>>4) != demuxer.format {
+        return errors.New("unexpected audio sound format")
     }
     data = data[1:]
 

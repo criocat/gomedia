@@ -399,8 +399,12 @@ func (cli *RtmpClient) handleVideoMessage(msg *rtmpMessage) error {
 }
 
 func (cli *RtmpClient) handleAudioMessage(msg *rtmpMessage) error {
+	format, err := audioFormat(msg.msg)
+	if err != nil {
+		return err
+	}
 	if cli.audioDemuxer == nil {
-		cli.audioDemuxer = flv.CreateAudioTagDemuxer(flv.FLV_SOUND_FORMAT((msg.msg[0] >> 4) & 0x0F))
+		cli.audioDemuxer = flv.CreateAudioTagDemuxer(format)
 		cli.audioDemuxer.OnFrame(func(codecid codec.CodecID, frame []byte) {
 			dts := cli.timestamp
 			pts := dts

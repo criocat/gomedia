@@ -127,6 +127,9 @@ func (f *FlvReader) Input(data []byte) (err error) {
                     f.state = FLV_PARSER_VIDEO_TAG
                 }
             } else if f.flvTag.TagType == uint8(AUDIO_TAG) {
+                if f.flvTag.DataSize < 2 {
+                    return errors.New("audio tag size < 2")
+                }
                 if f.audioDemuxer == nil {
                     f.state = FLV_PARSER_DETECT_AUDIO
                 } else {

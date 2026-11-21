@@ -152,3 +152,46 @@ func TestRtmpClient_Pub(t *testing.T) {
         fmt.Println(err)
     })
 }
+
+func TestRTMPRejectInvalidAudioTags(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tag  []byte
+	}{
+		{"empty-message", nil},
+		{"unknown-format", []byte{0xff, 1}},
+		{"aac-without-packet-type", []byte{0xaf}},
+		{"g711-without-payload", []byte{0x70}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, client := NewRtmpServerHandle(), NewRtmpClient()
+			for _, endpoint := range []struct {
+				name   string
+				handle func(*rtmpMessage) error
+				bind   func(OnFrame)
+			}{
+				{"client", client.handleAudioMessage, client.OnFrame},
+				{"server", server.handleAudioMessage, server.OnFrame},
+			} {
+				t.Run(endpoint.name, func(t *testing.T) {
+					endpoint.bind(func(codec.CodecID, uint32, uint32, []byte) {
+						t.Error("invalid audio tag emitted a frame")
+					})
+					if err := endpoint.handle(&rtmpMessage{msg: tc.tag}); err == nil {
+						t.Fatal("accepted an invalid audio tag")
+					}
+					frames := 0
+					endpoint.bind(func(cid codec.CodecID, _, _ uint32, payload []byte) {
+						frames++
+						if cid != codec.CODECID_AUDIO_G711A || len(payload) != 1 || payload[0] != 1 {
+							t.Fatalf("unexpected valid audio frame: codec=%v, payload=%x", cid, payload)
+						}
+					})
+					if err := endpoint.handle(&rtmpMessage{msg: []byte{0x70, 1}}); err != nil || frames != 1 {
+						t.Fatalf("valid audio after rejection: err=%v, frames=%d", err, frames)
+					}
+				})
+			}
+		})
+	}
+}

@@ -1,5 +1,11 @@
 package rtmp
 
+import (
+	"errors"
+
+	"github.com/yapingcat/gomedia/go-flv"
+)
+
 // Protocol control messages MUST have message stream ID 0 (called as control stream) and chunk stream ID 2, and are sent with highest
 // priority.
 
@@ -30,4 +36,17 @@ type rtmpMessage struct {
     msg       []byte
     msgtype   MessageType
     streamid  uint32
+}
+
+func audioFormat(data []byte) (flv.FLV_SOUND_FORMAT, error) {
+	if len(data) < 2 {
+		return 0, errors.New("empty or truncated RTMP audio packet")
+	}
+	format := flv.FLV_SOUND_FORMAT(data[0] >> 4)
+	switch format {
+	case flv.FLV_AAC, flv.FLV_G711A, flv.FLV_G711U, flv.FLV_MP3:
+		return format, nil
+	default:
+		return 0, errors.New("unsupported RTMP audio codec")
+	}
 }
