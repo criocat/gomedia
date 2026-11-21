@@ -94,7 +94,11 @@ func TestHEVCCompositionTimeAcrossChunks(t *testing.T) {
 		if err := write(config, 0); err != nil {
 			t.Fatal(err)
 		}
-		for i, dts := range []uint32{80, 120, 160, 200} {
+		const boundaryDTS = 200 + 0xffffff
+		const extendedDelta = 0x01000000
+		// Reuse an extended delta in fmt 3, then cross the uint32 wrap.
+		for i, dts := range []uint32{80, 120, 160, 200, boundaryDTS, boundaryDTS + extendedDelta,
+			boundaryDTS + 2*extendedDelta, 0xffffffe0, 1000} {
 			if err := write(frame, dts); err != nil {
 				t.Fatal(err)
 			}

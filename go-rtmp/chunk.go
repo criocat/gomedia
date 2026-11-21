@@ -4,6 +4,8 @@ import (
     "encoding/binary"
 )
 
+const extendedTimestampMarker = 0x00ffffff
+
 var ChunkType [4]byte = [4]byte{11, 7, 3, 0}
 
 type basicHead struct {
@@ -59,7 +61,7 @@ func (cmh *chunkMsgHead) encode(fmt uint8) []byte {
         hdr[6] = cmh.msgTypeId
         fallthrough
     case 2:
-        if cmh.timestamp > 0x00ffffff {
+        if cmh.timestamp >= extendedTimestampMarker {
             hdr[0] = 0xff
             hdr[1] = 0xff
             hdr[2] = 0xff
@@ -121,7 +123,7 @@ func (chk *chunkPacket) decodeHead(data []byte) {
 func (chk *chunkPacket) encode() []byte {
     pkt := chk.basic.encode()
     pkt = append(pkt, chk.msgHdr.encode(chk.basic.fmt)...)
-    if chk.msgHdr.timestamp > 0x00ffffff {
+    if chk.msgHdr.timestamp >= extendedTimestampMarker {
         tmp := make([]byte, 4)
         binary.BigEndian.PutUint32(tmp, chk.msgHdr.timestamp)
         pkt = append(pkt, tmp...)
@@ -207,11 +209,12 @@ func (cs *chunkStreamWriter) writeData(data []byte, msgType MessageType, streamI
 }
 
 type chunkStream struct {
-    firstChunkFmt uint8
-    timestamp     uint32
-    pkt           *chunkPacket
-    hdr           []byte
-    message       []byte
+    firstChunkFmt        uint8
+    hasExtendedTimestamp bool
+    timestamp            uint32
+    pkt                  *chunkPacket
+    hdr                  []byte
+    message              []byte
 }
 
 func newChunkStream() *chunkStream {
@@ -275,7 +278,7 @@ func (reader *chunkStreamReader) readRtmpMessage(data []byte, onMsg func(*rtmpMe
                 reader.current.firstChunkFmt = reader.current.pkt.basic.fmt
             }
             if basic.fmt == 3 {
-                if reader.current.pkt.msgHdr.timestamp == 0x00ffffff {
+                if reader.current.hasExtendedTimestamp {
                     reader.state = S_EXTEND_TS
                 } else {
                     reader.state = S_PAYLOAD
@@ -292,7 +295,8 @@ func (reader *chunkStreamReader) readRtmpMessage(data []byte, onMsg func(*rtmpMe
                 data = data[appendLen:]
             }
             reader.current.pkt.msgHdr.decode(reader.current.pkt.basic.fmt, reader.current.hdr)
-            if reader.current.pkt.msgHdr.timestamp == 0x00ffffff {
+            reader.current.hasExtendedTimestamp = reader.current.pkt.msgHdr.timestamp == extendedTimestampMarker
+            if reader.current.hasExtendedTimestamp {
                 reader.state = S_EXTEND_TS
             } else {
                 reader.state = S_PAYLOAD
