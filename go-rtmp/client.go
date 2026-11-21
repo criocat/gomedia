@@ -40,9 +40,11 @@ type RtmpClient struct {
 	videoDemuxer   flv.VideoTagDemuxer
 	videoCodec     flv.FLV_VIDEO_CODEC_ID
 	audioDemuxer   flv.AudioTagDemuxer
+	audioCodec     flv.FLV_SOUND_FORMAT
 	videoMuxer     flv.AVTagMuxer
 	audioMuxer     flv.AVTagMuxer
 	videoWriteCodec codec.CodecID
+	audioWriteCodec codec.CodecID
 	timestamp      uint32
 	lastMethod     RtmpConnectCmd
 	lastMethodTid  int
@@ -236,10 +238,17 @@ func (cli *RtmpClient) sendAcknowledgement() error {
 }
 
 func (cli *RtmpClient) WriteAudio(cid codec.CodecID, frame []byte, pts, dts uint32) error {
+	if cli.audioChan != nil && cli.audioWriteCodec != cid {
+		return errors.New("outgoing audio codec changed; reconnect required")
+	}
 	if cli.audioMuxer == nil {
+		if cid != codec.CODECID_AUDIO_AAC && cid != codec.CODECID_AUDIO_G711A && cid != codec.CODECID_AUDIO_G711U {
+			return errors.New("unsupported outgoing audio codec")
+		}
 		cli.audioMuxer = flv.CreateAudioMuxer(flv.CovertCodecId2SoundFromat(cid))
 	}
 	if cli.audioChan == nil {
+		cli.audioWriteCodec = cid
 		cli.audioChan = newChunkStreamWriter(CHUNK_CHANNEL_AUDIO)
 		cli.audioChan.chunkSize = cli.writeChunkSize
 	}
@@ -403,15 +412,23 @@ func (cli *RtmpClient) handleAudioMessage(msg *rtmpMessage) error {
 	if err != nil {
 		return err
 	}
-	if cli.audioDemuxer == nil {
-		cli.audioDemuxer = flv.CreateAudioTagDemuxer(format)
-		cli.audioDemuxer.OnFrame(func(codecid codec.CodecID, frame []byte) {
-			dts := cli.timestamp
-			pts := dts
-			cli.onframe(codecid, pts, dts, frame)
-		})
+	if cli.audioDemuxer != nil {
+		if cli.audioCodec != format {
+			return errors.New("audio codec changed; reconnect required")
+		}
+		return cli.audioDemuxer.Decode(msg.msg)
 	}
-	return cli.audioDemuxer.Decode(msg.msg)
+	demuxer := flv.CreateAudioTagDemuxer(format)
+	demuxer.OnFrame(func(codecid codec.CodecID, frame []byte) {
+		dts := cli.timestamp
+		pts := dts
+		cli.onframe(codecid, pts, dts, frame)
+	})
+	if err := demuxer.Decode(msg.msg); err != nil {
+		return err
+	}
+	cli.audioDemuxer, cli.audioCodec = demuxer, format
+	return nil
 }
 
 func (cli *RtmpClient) handleResult(args []amf0Item) error {

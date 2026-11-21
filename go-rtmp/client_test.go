@@ -195,3 +195,79 @@ func TestRTMPRejectInvalidAudioTags(t *testing.T) {
 		})
 	}
 }
+
+func TestRTMPRejectIncomingAudioCodecSwitch(t *testing.T) {
+	server, client := NewRtmpServerHandle(), NewRtmpClient()
+	for _, endpoint := range []struct {
+		name   string
+		handle func(*rtmpMessage) error
+		bind   func(OnFrame)
+	}{
+		{"client", client.handleAudioMessage, client.OnFrame},
+		{"server", server.handleAudioMessage, server.OnFrame},
+	} {
+		t.Run(endpoint.name, func(t *testing.T) {
+			frames := 0
+			endpoint.bind(func(cid codec.CodecID, _, _ uint32, _ []byte) {
+				frames++
+				if cid != codec.CODECID_AUDIO_G711A {
+					t.Errorf("unexpected codec %v", cid)
+				}
+			})
+			if err := endpoint.handle(&rtmpMessage{msg: []byte{0xaf, 0, 0x12}}); err == nil {
+				t.Fatal("accepted a truncated AAC configuration")
+			}
+			original := &rtmpMessage{msg: []byte{0x70, 1}}
+			if err := endpoint.handle(original); err != nil {
+				t.Fatalf("invalid first tag selected a codec: %v", err)
+			}
+			if err := endpoint.handle(&rtmpMessage{msg: []byte{0x80, 2}}); err == nil || err.Error() != "audio codec changed; reconnect required" {
+				t.Fatalf("incoming codec switch: got %v", err)
+			}
+			if err := endpoint.handle(original); err != nil || frames != 2 {
+				t.Fatalf("original audio after rejection: err=%v, frames=%d", err, frames)
+			}
+		})
+	}
+}
+
+func TestRTMPRejectOutgoingAudioCodecSwitch(t *testing.T) {
+	server, client := NewRtmpServerHandle(), NewRtmpClient()
+	custom := NewRtmpClient(WithAudioMuxer(flv.NewG711AMuxer(1, 5500)))
+	for _, endpoint := range []struct {
+		name      string
+		write     func(codec.CodecID, []byte, uint32, uint32) error
+		setOutput func(OutputCB)
+	}{
+		{"client", client.WriteAudio, client.SetOutput},
+		{"server", server.WriteAudio, server.SetOutput},
+		{"custom-client-muxer", custom.WriteAudio, custom.SetOutput},
+	} {
+		t.Run(endpoint.name, func(t *testing.T) {
+			writes := 0
+			endpoint.setOutput(func([]byte) error {
+				writes++
+				return nil
+			})
+			payload := []byte{1}
+			if err := endpoint.write(codec.CODECID_AUDIO_G711A, payload, 0, 0); err != nil {
+				t.Fatal(err)
+			}
+			if err := endpoint.write(codec.CODECID_AUDIO_G711U, payload, 20, 20); err == nil {
+				t.Error("accepted outgoing codec switch")
+			}
+			if err := endpoint.write(codec.CODECID_AUDIO_G711A, payload, 40, 40); err != nil || writes != 2 {
+				t.Fatalf("original audio after rejection: err=%v, writes=%d", err, writes)
+			}
+		})
+	}
+}
+
+func TestRTMPWriteAudioRejectUnsupportedCodec(t *testing.T) {
+	server, client := NewRtmpServerHandle(), NewRtmpClient()
+	for _, write := range []func(codec.CodecID, []byte, uint32, uint32) error{client.WriteAudio, server.WriteAudio} {
+		if err := write(codec.CODECID_UNRECOGNIZED, nil, 0, 0); err == nil {
+			t.Error("accepted unsupported outgoing audio codec")
+		}
+	}
+}

@@ -113,9 +113,11 @@ type RtmpServerHandle struct {
     videoDemuxer   flv.VideoTagDemuxer
     videoCodec     flv.FLV_VIDEO_CODEC_ID
     audioDemuxer   flv.AudioTagDemuxer
+    audioCodec     flv.FLV_SOUND_FORMAT
     videoMuxer     flv.AVTagMuxer
     audioMuxer     flv.AVTagMuxer
     videoWriteCodec codec.CodecID
+    audioWriteCodec codec.CodecID
     onframe        OnFrame
     output         OutputCB
     onRelease      OnReleaseStream
@@ -218,11 +220,17 @@ func (server *RtmpServerHandle) WriteFrame(cid codec.CodecID, frame []byte, pts,
 }
 
 func (server *RtmpServerHandle) WriteAudio(cid codec.CodecID, frame []byte, pts, dts uint32) error {
-
+    if server.audioChan != nil && server.audioWriteCodec != cid {
+        return errors.New("outgoing audio codec changed; reconnect required")
+    }
     if server.audioMuxer == nil {
+        if cid != codec.CODECID_AUDIO_AAC && cid != codec.CODECID_AUDIO_G711A && cid != codec.CODECID_AUDIO_G711U {
+            return errors.New("unsupported outgoing audio codec")
+        }
         server.audioMuxer = flv.CreateAudioMuxer(flv.CovertCodecId2SoundFromat(cid))
     }
     if server.audioChan == nil {
+        server.audioWriteCodec = cid
         server.audioChan = newChunkStreamWriter(CHUNK_CHANNEL_AUDIO)
         server.audioChan.chunkSize = server.writeChunkSize
     }
@@ -507,13 +515,21 @@ func (server *RtmpServerHandle) handleAudioMessage(msg *rtmpMessage) error {
     if err != nil {
         return err
     }
-    if server.audioDemuxer == nil {
-        server.audioDemuxer = flv.CreateAudioTagDemuxer(format)
-        server.audioDemuxer.OnFrame(func(codecid codec.CodecID, frame []byte) {
-            dts := server.timestamp
-            pts := dts
-            server.onframe(codecid, pts, dts, frame)
-        })
+    if server.audioDemuxer != nil {
+        if server.audioCodec != format {
+            return errors.New("audio codec changed; reconnect required")
+        }
+        return server.audioDemuxer.Decode(msg.msg)
     }
-    return server.audioDemuxer.Decode(msg.msg)
+    demuxer := flv.CreateAudioTagDemuxer(format)
+    demuxer.OnFrame(func(codecid codec.CodecID, frame []byte) {
+        dts := server.timestamp
+        pts := dts
+        server.onframe(codecid, pts, dts, frame)
+    })
+    if err := demuxer.Decode(msg.msg); err != nil {
+        return err
+    }
+    server.audioDemuxer, server.audioCodec = demuxer, format
+    return nil
 }
