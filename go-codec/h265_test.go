@@ -96,6 +96,33 @@ func TestH265RawSPS_Decode(t *testing.T) {
 	}
 }
 
+func TestHEVCHRDSubLayer(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix uint8
+	}{
+		// fixed_pic_rate_general_flag=1, elemental_duration_in_tc_minus1=0, cpb_cnt_minus1=0.
+		{name: "fixed_picture_rate", prefix: 0b111},
+		// Both picture rate flags are 0. low_delay_hrd_flag=1 implies one CPB entry.
+		{name: "low_delay", prefix: 0b001},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writer := NewBitStreamWriter(4)
+			writer.PutUint8(0b100, 3) // NAL HRD only, without sub-picture parameters.
+			writer.PutUint32(0, 23)   // Bit rate and CPB scales, and delay lengths.
+			writer.PutUint8(tt.prefix, 3)
+			writer.PutUint8(0b111, 3) // One CPB entry with bit rate and size coded as ue(0), and cbr_flag=1.
+
+			bs := NewBitStream(writer.Bits())
+			skip_hrd_parameters(1, 0, bs)
+			if remaining := bs.RemainBits(); remaining != 0 {
+				t.Fatalf("%d HRD bits left unread", remaining)
+			}
+		})
+	}
+}
+
 func TestH265RawPPS_Decode(t *testing.T) {
 
 	type args struct {

@@ -399,7 +399,7 @@ func skip_hrd_parameters(cprms_present_flag uint8, max_sub_layers_minus1 uint32,
     }
     for i := 0; i <= int(max_sub_layers_minus1); i++ {
         fixed_pic_rate_general_flag := bs.GetBit()
-        fixed_pic_rate_within_cvs_flag := uint8(0)
+        fixed_pic_rate_within_cvs_flag := fixed_pic_rate_general_flag
         low_delay_hrd_flag := uint8(0)
         cpb_cnt_minus1 := uint32(0)
         if fixed_pic_rate_general_flag == 0 {
@@ -417,7 +417,7 @@ func skip_hrd_parameters(cprms_present_flag uint8, max_sub_layers_minus1 uint32,
             }
         }
         skip_sub_layer_hrd_parameters := func() {
-            for i := 0; i < int(cpb_cnt_minus1); i++ {
+            for i := 0; i <= int(cpb_cnt_minus1); i++ {
                 bs.ReadUE()
                 bs.ReadUE()
                 if sub_pic_hrd_params_present_flag == 1 {
