@@ -158,11 +158,13 @@ func (muxer *Movmuxer) addTrack(cid MP4_CODEC_TYPE, options ...TrackOption) uint
         opt(track)
     }
 
-    if cid == MP4_CODEC_H264 {
-        extra := track.extra.(*h264ExtraData)
+    if state := track.videoParameterSets(); state != nil {
         // Fragmented output may write the sample description before later updates.
-        extra.inBand = muxer.movFlag.isFragment() || muxer.movFlag.isDash()
-        extra.sealed = len(track.extraData) != 0
+        state.inBand = muxer.movFlag.isFragment() || muxer.movFlag.isDash()
+        state.sealed = len(track.extraData) != 0
+    }
+    if extra, ok := track.extra.(*h265ExtraData); ok && walkHEVCConfigArrays(track.extraData, nil) {
+        extra.load(track.extraData)
     }
     return track.trackId
 }

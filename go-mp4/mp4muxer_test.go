@@ -107,6 +107,112 @@ func TestMP4H264ParameterSetUpdates(t *testing.T) {
 	}
 }
 
+func TestMP4HEVCParameterSetStorage(t *testing.T) {
+	// libx265 configuration for 64x64 and 96x64 with the same parameter set IDs.
+	vps := []byte{0, 0, 0, 1, 0x40, 0x01, 0x0c, 0x01, 0xff, 0xff, 0x01, 0x60,
+		0, 0, 3, 0, 0x90, 0, 0, 3, 0, 0, 3, 0, 0x1e, 0x95, 0x94, 0x09}
+	initialSPS := []byte{0, 0, 0, 1, 0x42, 0x01, 0x01, 0x01, 0x60, 0, 0, 3, 0, 0x90,
+		0, 0, 3, 0, 0, 3, 0, 0x1e, 0xa0, 0x20, 0x81, 0x05, 0x96, 0x56,
+		0x54, 0xa4, 0xc2, 0xf0, 0x16, 0x80, 0x80, 0, 0, 3, 0, 0x80, 0, 0, 3, 0, 0x84}
+	updatedSPS := append([]byte(nil), initialSPS...)
+	updatedSPS[23] = 0x30
+	pps := []byte{0, 0, 0, 1, 0x44, 0x01, 0xc0, 0x73, 0xc0, 0x89}
+	idr := []byte{0, 0, 0, 1, 0x28, 0x01, 0xac, 0x4e, 0xd7, 0x1f, 0xff, 0xf5, 0xde, 0x9c, 0xaf, 0xdf, 0x86, 0x25, 0xc0}
+	initial := bytes.Join([][]byte{vps, initialSPS, pps}, nil)
+	record := codec.NewHEVCRecordConfiguration()
+	record.UpdateVPS(vps)
+	record.UpdateSPS(initialSPS)
+	record.UpdatePPS(pps)
+	config, err := record.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		fragmented bool
+		explicit   bool
+		sps        []byte
+		entry      string
+	}{
+		{"stable", false, false, initialSPS, "hvc1"},
+		{"stable with supplied hvcC", false, true, initialSPS, "hvc1"},
+		{"changed", false, false, updatedSPS, "hev1"},
+		{"changed in a later fragment", true, false, updatedSPS, "hev1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := newFmp4WriterSeeker(4096)
+			var muxerOptions []MuxerOption
+			if tc.fragmented {
+				muxerOptions = append(muxerOptions, WithMp4Flag(MP4_FLAG_FRAGMENT))
+			}
+			muxer, err := CreateMp4Muxer(output, muxerOptions...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var trackOptions []TrackOption
+			if tc.explicit {
+				trackOptions = append(trackOptions, WithExtraData(config))
+			}
+			id := muxer.AddVideoTrack(MP4_CODEC_H265, trackOptions...)
+			if err := muxer.Write(id, bytes.Join([][]byte{initial, idr}, nil), 0, 0); err != nil {
+				t.Fatal(err)
+			}
+			if tc.fragmented {
+				if err := muxer.FlushFragment(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Three-byte start codes must not turn repeats into updates.
+			update := bytes.Join([][]byte{vps[1:], tc.sps[1:], pps[1:]}, nil)
+			if err := muxer.Write(id, update, 40, 40); err != nil {
+				t.Fatal(err)
+			}
+			for _, dts := range []uint64{40, 80} {
+				if err := muxer.Write(id, append([]byte(nil), idr...), dts, dts); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := muxer.WriteTrailer(); err != nil {
+				t.Fatal(err)
+			}
+			data := output.buffer
+			if pos := bytes.Index(data, []byte("stsd")); pos < 0 || string(data[pos+16:pos+20]) != tc.entry {
+				t.Errorf("expected a %s sample description", tc.entry)
+			}
+			demuxer := CreateMp4Demuxer(bytes.NewReader(data))
+			infos, err := demuxer.ReadHead()
+			if err != nil || len(infos) != 1 || infos[0].SampleCount != 3 {
+				t.Fatalf("MP4 tracks = %+v, err = %v", infos, err)
+			}
+			hvcc := demuxer.tracks[0].extra.(*h265ExtraData).hvccExtra
+			if !bytes.Equal(hvcc.ToNalus(), initial) {
+				t.Error("hvcC must preserve the initial VPS, SPS and PPS")
+			}
+			for _, array := range hvcc.Arrays {
+				if complete := array.Array_completeness == 1; complete != (tc.entry == "hvc1") {
+					t.Errorf("NAL type %d has unexpected array completeness %t", array.NAL_unit_type, complete)
+				}
+			}
+			want := [][]byte{idr, idr, idr}
+			if tc.entry == "hev1" {
+				want[1] = bytes.Join([][]byte{vps, tc.sps, pps, idr}, nil)
+				want[2] = want[1]
+			}
+			for i, sample := range demuxer.tracks[0].samplelist {
+				wire := data[sample.offset : sample.offset+sample.size]
+				if !bytes.Equal(wire, annexBToMP4TestSample(want[i])) {
+					t.Errorf("sample %d: bytes = %x, want NALs %x", i, wire, want[i])
+				}
+				packet, err := demuxer.ReadPacket()
+				if err != nil || packet.Cid != MP4_CODEC_H265 || len(packet.Data) == 0 {
+					t.Fatalf("read sample %d: packet=%v err=%v", i, packet, err)
+				}
+			}
+		})
+	}
+}
+
 func annexBToMP4TestSample(annexB []byte) []byte {
 	var sample bytes.Buffer
 	codec.SplitFrame(annexB, func(nal []byte) bool {

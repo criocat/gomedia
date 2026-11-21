@@ -4,6 +4,8 @@ import (
     "encoding/binary"
     "fmt"
     "io"
+
+    "github.com/yapingcat/gomedia/go-codec"
 )
 
 // aligned(8) abstract class SampleEntry (unsigned int(32) format) extends Box(format){
@@ -311,9 +313,11 @@ func (entry *SampleDescriptionBox) Encode() (int, []byte) {
 
 func makeStsd(track *mp4track, handler_type HandlerType) []byte {
 
-    if track.cid == MP4_CODEC_H264 {
-        track.sealH264Configuration()
+    state := track.videoParameterSets()
+    if state != nil {
+        track.sealVideoConfiguration(state)
     }
+    inBand := state != nil && state.inBand
     var avbox []byte
     var extraData []byte
     if len(track.extraData) == 0 {
@@ -330,6 +334,9 @@ func makeStsd(track *mp4track, handler_type HandlerType) []byte {
     if track.cid == MP4_CODEC_H264 {
         avbox = makeAvcCBox(extraData)
     } else if track.cid == MP4_CODEC_H265 {
+        if inBand {
+            extraData = hevcConfigWithInBandParameterSets(extraData)
+        }
         avbox = makeHvcCBox(extraData)
     } else if track.cid == MP4_CODEC_AAC || track.cid == MP4_CODEC_MP2 || track.cid == MP4_CODEC_MP3 {
         avbox = makeEsdsBox(track.trackId, track.cid, extraData)
@@ -341,8 +348,13 @@ func makeStsd(track *mp4track, handler_type HandlerType) []byte {
     var offset int
     if handler_type.equal(vide) {
         name := getCodecNameWithCodecId(track.cid)
-        if track.cid == MP4_CODEC_H264 && track.extra.(*h264ExtraData).inBand {
-            name = [4]byte{'a', 'v', 'c', '3'}
+        if inBand {
+            switch track.cid {
+            case MP4_CODEC_H264:
+                name = [4]byte{'a', 'v', 'c', '3'}
+            case MP4_CODEC_H265:
+                name = [4]byte{'h', 'e', 'v', '1'}
+            }
         }
         entry := NewVisualSampleEntry(name)
         entry.width = uint16(track.width)
@@ -392,6 +404,49 @@ func decodeAvccBox(demuxer *MovDemuxer, size uint32) (err error) {
     }
     track.extra.load(buf)
     return
+}
+
+func hevcConfigWithInBandParameterSets(config []byte) []byte {
+    data := append([]byte(nil), config...)
+    if !walkHEVCConfigArrays(data, func(offset int) {
+        switch codec.H265_NAL_TYPE(data[offset] & 0x3f) {
+        case codec.H265_NAL_VPS, codec.H265_NAL_SPS, codec.H265_NAL_PPS:
+            data[offset] &^= 0x80 // More parameter sets may appear in samples.
+        }
+    }) {
+        return config
+    }
+    return data
+}
+
+func walkHEVCConfigArrays(data []byte, visit func(int)) bool {
+    const headerSize = 23
+    if len(data) < headerSize {
+        return false
+    }
+    pos := headerSize
+    for i := 0; i < int(data[headerSize-1]); i++ {
+        if len(data)-pos < 3 {
+            return false
+        }
+        if visit != nil {
+            visit(pos)
+        }
+        count := int(binary.BigEndian.Uint16(data[pos+1:]))
+        pos += 3
+        for j := 0; j < count; j++ {
+            if len(data)-pos < 2 {
+                return false
+            }
+            size := int(binary.BigEndian.Uint16(data[pos:]))
+            pos += 2
+            if size > len(data)-pos {
+                return false
+            }
+            pos += size
+        }
+    }
+    return true
 }
 
 func makeHvcCBox(extraData []byte) []byte {

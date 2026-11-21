@@ -37,13 +37,33 @@ type extraData interface {
     load(data []byte)
 }
 
-type h264ExtraData struct {
-    spss          [][]byte
-    ppss          [][]byte
+type videoParameterSetState struct {
     sealed        bool
     inBand        bool
     updated       bool
     pendingUpdate bool
+}
+
+func (state *videoParameterSetState) markUpdate(changed bool) {
+    if changed && state.sealed {
+        state.updated = true
+        state.pendingUpdate = true
+    }
+}
+
+func (state *videoParameterSetState) writeInBand(keyFrame bool) bool {
+    if !state.pendingUpdate && !(state.updated && keyFrame) {
+        return false
+    }
+    state.pendingUpdate = false
+    state.inBand = true
+    return true
+}
+
+type h264ExtraData struct {
+    videoParameterSetState
+    spss [][]byte
+    ppss [][]byte
 }
 
 func (extra *h264ExtraData) export() []byte {
@@ -58,6 +78,7 @@ func (extra *h264ExtraData) load(data []byte) {
 }
 
 type h265ExtraData struct {
+    videoParameterSetState
     hvccExtra *codec.HEVCRecordConfiguration
 }
 
@@ -306,13 +327,23 @@ func (track *mp4track) writeSample(sample []byte, pts, dts uint64) (err error) {
     return err
 }
 
-func (track *mp4track) sealH264Configuration() {
-    extra := track.extra.(*h264ExtraData)
-    if !extra.sealed {
+func (track *mp4track) videoParameterSets() *videoParameterSetState {
+    switch extra := track.extra.(type) {
+    case *h264ExtraData:
+        return &extra.videoParameterSetState
+    case *h265ExtraData:
+        return &extra.videoParameterSetState
+    default:
+        return nil
+    }
+}
+
+func (track *mp4track) sealVideoConfiguration(state *videoParameterSetState) {
+    if !state.sealed {
         if len(track.extraData) == 0 {
-            track.extraData = extra.export()
+            track.extraData = track.extra.export()
         }
-        extra.sealed = true
+        state.sealed = true
     }
 }
 
@@ -363,8 +394,8 @@ func (track *mp4track) writeH264(h264 []byte, pts, dts uint64) (err error) {
         default:
             if codec.IsH264VCLNaluType(nalType) {
                 if !sample.hasVcl {
-                    track.sealH264Configuration()
-                    if extra.pendingUpdate || (extra.updated && nalType == codec.H264_NAL_I_SLICE) {
+                    track.sealVideoConfiguration(&extra.videoParameterSetState)
+                    if extra.writeInBand(nalType == codec.H264_NAL_I_SLICE) {
                         // Put the active configuration ahead of any cached SEI and VCL data.
                         var configuration []byte
                         for _, sets := range [][][]byte{extra.spss, extra.ppss} {
@@ -373,8 +404,6 @@ func (track *mp4track) writeH264(h264 []byte, pts, dts uint64) (err error) {
                             }
                         }
                         sample.cache = append(configuration, sample.cache...)
-                        extra.pendingUpdate = false
-                        extra.inBand = true
                     }
                 }
                 sample.pts = pts
@@ -386,10 +415,7 @@ func (track *mp4track) writeH264(h264 []byte, pts, dts uint64) (err error) {
             return true
         }
 
-        if changed && extra.sealed {
-            extra.updated = true
-            extra.pendingUpdate = true
-        }
+        extra.markUpdate(changed)
         return true
     })
     return
@@ -397,23 +423,63 @@ func (track *mp4track) writeH264(h264 []byte, pts, dts uint64) (err error) {
 
 func appendMP4NAL(dst, nalu []byte) []byte {
     start, length := codec.FindStartCode(nalu, 0)
-    payload := nalu[start+int(length):]
+    return appendMP4NALPayload(dst, nalu[start+int(length):])
+}
+
+func appendMP4NALPayload(dst, payload []byte) []byte {
     var size [4]byte
     binary.BigEndian.PutUint32(size[:], uint32(len(payload)))
     dst = append(dst, size[:]...)
     return append(dst, payload...)
 }
 
-func (track *mp4track) writeH265(h265 []byte, pts, dts uint64) (err error) {
-    h265extra, ok := track.extra.(*h265ExtraData)
-    if !ok {
-        panic("must init h265ExtraData first")
+func (extra *h265ExtraData) updateParameterSet(nalu []byte, nalType codec.H265_NAL_TYPE, update func([]byte)) {
+    start, length := codec.FindStartCode(nalu, 0)
+    payload := nalu[start+int(length):]
+    for _, array := range extra.hvccExtra.Arrays {
+        if array.NAL_unit_type == uint8(nalType) {
+            for _, unit := range array.NalUnits {
+                if bytes.Equal(unit.Nalu, payload) {
+                    return
+                }
+            }
+            break
+        }
     }
+    update(nalu)
+    extra.markUpdate(true)
+}
+
+func (extra *h265ExtraData) parameterSetNALs() []byte {
+    var config []byte
+    for _, nalType := range [...]codec.H265_NAL_TYPE{codec.H265_NAL_VPS, codec.H265_NAL_SPS, codec.H265_NAL_PPS} {
+        for _, array := range extra.hvccExtra.Arrays {
+            if array.NAL_unit_type == uint8(nalType) {
+                for _, unit := range array.NalUnits {
+                    config = appendMP4NALPayload(config, unit.Nalu)
+                }
+            }
+        }
+    }
+    return config
+}
+
+func (track *mp4track) writeH265(h265 []byte, pts, dts uint64) (err error) {
+    extra := track.extra.(*h265ExtraData)
     codec.SplitFrameWithStartCode(h265, func(nalu []byte) bool {
-        nalu_type := codec.H265NaluType(nalu)
-        switch nalu_type {
+        nalType := codec.H265NaluType(nalu)
+        sample := track.lastSample
+        if sample.hasVcl && isH265NewAccessUnit(nalu) {
+            if err = track.flush(); err != nil {
+                return false
+            }
+        }
+
+        switch nalType {
+        case codec.H265_NAL_VPS:
+            extra.updateParameterSet(nalu, nalType, extra.hvccExtra.UpdateVPS)
         case codec.H265_NAL_SPS:
-            h265extra.hvccExtra.UpdateSPS(nalu)
+            extra.updateParameterSet(nalu, nalType, extra.hvccExtra.UpdateSPS)
             if track.width == 0 || track.height == 0 {
                 width, height := codec.GetH265Resolution(nalu)
                 if track.width == 0 {
@@ -424,43 +490,23 @@ func (track *mp4track) writeH265(h265 []byte, pts, dts uint64) (err error) {
                 }
             }
         case codec.H265_NAL_PPS:
-            h265extra.hvccExtra.UpdatePPS(nalu)
-        case codec.H265_NAL_VPS:
-            h265extra.hvccExtra.UpdateVPS(nalu)
+            extra.updateParameterSet(nalu, nalType, extra.hvccExtra.UpdatePPS)
+        default:
+            if codec.IsH265VCLNaluType(nalType) {
+                keyFrame := nalType >= codec.H265_NAL_SLICE_BLA_W_LP && nalType <= codec.H265_NAL_SLICE_CRA
+                if !sample.hasVcl {
+                    track.sealVideoConfiguration(&extra.videoParameterSetState)
+                    if extra.writeInBand(keyFrame) {
+                        sample.cache = append(extra.parameterSetNALs(), sample.cache...)
+                    }
+                }
+                sample.pts = pts
+                sample.dts = dts
+                sample.hasVcl = true
+                sample.isKey = keyFrame
+            }
+            sample.cache = appendMP4NAL(sample.cache, nalu)
         }
-
-        if track.lastSample.hasVcl && isH265NewAccessUnit(nalu) {
-            var currentOffset int64
-            if currentOffset, err = track.writer.Seek(0, io.SeekCurrent); err != nil {
-                return false
-            }
-            entry := sampleEntry{
-                pts:                    track.lastSample.pts,
-                dts:                    track.lastSample.dts,
-                size:                   0,
-                isKeyFrame:             track.lastSample.isKey,
-                SampleDescriptionIndex: 1,
-                offset:                 uint64(currentOffset),
-            }
-            n := 0
-            if n, err = track.writer.Write(track.lastSample.cache); err != nil {
-                return false
-            }
-            entry.size = uint64(n)
-            track.addSampleEntry(entry)
-            track.lastSample.cache = track.lastSample.cache[:0]
-            track.lastSample.hasVcl = false
-        }
-        if codec.IsH265VCLNaluType(nalu_type) {
-            track.lastSample.pts = pts
-            track.lastSample.dts = dts
-            track.lastSample.hasVcl = true
-            track.lastSample.isKey = false
-            if nalu_type >= codec.H265_NAL_SLICE_BLA_W_LP && nalu_type <= codec.H265_NAL_SLICE_CRA {
-                track.lastSample.isKey = true
-            }
-        }
-        track.lastSample.cache = append(track.lastSample.cache, codec.ConvertAnnexBToAVCC(nalu)...)
         return true
     })
     return
