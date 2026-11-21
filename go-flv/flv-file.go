@@ -137,7 +137,13 @@ func (f *FlvReader) Input(data []byte) (err error) {
                 f.state = FLV_PARSER_SCRIPT_TAG
             }
         case FLV_PARSER_DETECT_VIDEO:
-            if err = f.createVideoTagDemuxer(FLV_VIDEO_CODEC_ID(buf[0] & 0x0F)); err != nil {
+            if f.flvTag.DataSize < 5 {
+                return errors.New("video tag size < 5")
+            }
+            if len(buf) < 5 {
+                goto end
+            }
+            if err = f.createVideoTagDemuxer(GetFLVVideoCodecId(buf[:5])); err != nil {
                 goto end
             }
             f.state = FLV_PARSER_VIDEO_TAG

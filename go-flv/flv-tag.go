@@ -95,7 +95,10 @@ type VideoTag struct {
 }
 
 func (vtag VideoTag) Encode() (tag []byte) {
-    if vtag.CodecId == uint8(FLV_AVC) || vtag.CodecId == uint8(FLV_HEVC) {
+    if vtag.CodecId == uint8(FLV_HEVC) {
+        return encodeHEVCVideoHeader(vtag)
+    }
+    if vtag.CodecId == uint8(FLV_AVC) {
         tag = make([]byte, 5)
         tag[1] = vtag.AVCPacketType
         PutUint24(tag[2:], uint32(vtag.CompositionTime))
@@ -106,7 +109,8 @@ func (vtag VideoTag) Encode() (tag []byte) {
     return
 }
 
-// 外部已经确保len(data) >= 5
+// The caller must provide the complete header: at least 5 bytes, or 8 bytes
+// for an enhanced HEVC CodedFrames packet with a composition time offset.
 func (vtag *VideoTag) Decode(data []byte) {
     isExHeader := data[0] & 0x80
     if isExHeader != 0 {
@@ -118,17 +122,22 @@ func (vtag *VideoTag) Decode(data []byte) {
         if data[1] == 'h' && data[2] == 'v' && data[3] == 'c' && data[4] == '1' {
             // hevc
             vtag.CodecId = uint8(FLV_HEVC)
+            vtag.CompositionTime = 0
 
             if vtag.AVCPacketType == PacketTypeCodedFrames {
-                vtag.CompositionTime = int32(GetUint24(data[5:]))
+                vtag.CompositionTime = signedCompositionTime(data[5:])
             }
         }
     } else {
         vtag.FrameType = data[0] >> 4
         vtag.CodecId = data[0] & 0x0F
-        if vtag.CodecId == uint8(FLV_AVC) || vtag.CodecId == uint8(FLV_HEVC) {
+        switch FLV_VIDEO_CODEC_ID(vtag.CodecId) {
+        case FLV_AVC:
             vtag.AVCPacketType = data[1]
             vtag.CompositionTime = int32(GetUint24(data[2:]))
+        case FLV_HEVC:
+            vtag.AVCPacketType = data[1]
+            vtag.CompositionTime = signedCompositionTime(data[2:])
         }
     }
 }

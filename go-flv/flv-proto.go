@@ -63,6 +63,9 @@ const (
 )
 
 func GetFLVVideoCodecId(data []byte) (cid FLV_VIDEO_CODEC_ID) {
+    if len(data) == 0 || (data[0]&0x80 != 0 && len(data) < 5) {
+        return 0
+    }
     isExHeader := data[0] & 0x80
     if isExHeader != 0 {
         // TODO av1和VP9

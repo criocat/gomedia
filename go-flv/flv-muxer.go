@@ -168,30 +168,33 @@ func (muxer *HevcMuxer) Write(frames []byte, pts uint32, dts uint32) [][]byte {
         switch naltype {
         case codec.H265_NAL_SPS:
             muxer.hvcc.UpdateSPS(nalu)
-            muxer.cache = append(muxer.cache, codec.ConvertAnnexBToAVCC(nalu)...)
         case codec.H265_NAL_PPS:
             muxer.hvcc.UpdatePPS(nalu)
-            muxer.cache = append(muxer.cache, codec.ConvertAnnexBToAVCC(nalu)...)
         case codec.H265_NAL_VPS:
             muxer.hvcc.UpdateVPS(nalu)
-            muxer.cache = append(muxer.cache, codec.ConvertAnnexBToAVCC(nalu)...)
         default:
             if naltype >= 16 && naltype <= 21 {
                 isKey = true
             }
-            vcl = codec.IsH265VCLNaluType(naltype)
-            muxer.cache = append(muxer.cache, codec.ConvertAnnexBToAVCC(nalu)...)
+            vcl = vcl || codec.IsH265VCLNaluType(naltype)
         }
+        // ConvertAnnexBToAVCC rewrites four-byte start codes in place.
+        // The caller may retain this frame or share it with other consumers.
+        muxer.cache = appendHEVCNAL(muxer.cache, nalu)
         return true
     })
     var tags [][]byte
-    if muxer.first && len(muxer.hvcc.Arrays) > 0 {
+    if muxer.first && hasHEVCParameterSets(muxer.hvcc) {
         extraData, _ := muxer.hvcc.Encode()
         tags = append(tags, WriteVideoTag(extraData, true, FLV_HEVC, 0, true))
         muxer.first = false
     }
     if vcl {
-        tags = append(tags, WriteVideoTag(muxer.cache, isKey, FLV_HEVC, int32(pts-dts), false))
+        if !muxer.first {
+            tags = append(tags, WriteVideoTag(muxer.cache, isKey, FLV_HEVC, int32(pts-dts), false))
+        }
+        // Drop an early frame if VPS/SPS/PPS are still missing. Do not merge
+        // it into a later access unit with a different timestamp.
         muxer.cache = muxer.cache[:0]
     }
     return tags
