@@ -311,40 +311,56 @@ func (server *RtmpServerHandle) handleMessage(msg *rtmpMessage) error {
 }
 
 func (server *RtmpServerHandle) handleCommand(data []byte) error {
-    item := amf0Item{}
-    l := item.decode(data)
-    data = data[l:]
-    cmd := string(item.value.([]byte))
+    cmd, args, err := decodeCommand(data)
+    if err != nil {
+        return err
+    }
+    switch cmd {
+    case "connect", "releaseStream", "createStream", "play", "publish":
+        if len(args) == 0 || args[0].amfType != AMF0_NUMBER {
+            return errors.New("invalid AMF0 transaction ID")
+        }
+    }
     switch cmd {
     case "connect":
-        server.changeState(STATE_RTMP_CONNECTING)
-        return server.handleConnect(data)
+        return server.handleConnect(args)
     case "releaseStream":
-        server.handleReleaseStream(data)
-    case "FCPublish":
+        return server.handleReleaseStream(args)
     case "createStream":
-        return server.handleCreateStream(data)
+        return server.handleCreateStream(args)
     case "play":
-        return server.handlePlay(data)
+        return server.handlePlay(args)
     case "publish":
-        return server.handlePublish(data)
-    default:
+        return server.handlePublish(args)
     }
     return nil
 }
 
-func (server *RtmpServerHandle) handleConnect(data []byte) error {
-    _, objs := decodeAmf0(data)
-    if len(objs) == 0 {
+func (server *RtmpServerHandle) handleConnect(args []amf0Item) error {
+    if len(args) < 2 {
+        return errors.New("missing AMF0 connect object")
+    }
+    obj, ok := args[1].value.(amfObject)
+    if !ok {
         return errors.New("invalid AMF0 connect object")
     }
-    for _, item := range objs[0].items {
-        if item.name == "app" {
-            server.app = string(item.value.value.([]byte))
-        } else if item.name == "tcUrl" {
-            server.tcUrl = string(item.value.value.([]byte))
+    app, tcUrl := server.app, server.tcUrl
+    for _, item := range obj.items {
+        switch item.name {
+        case "app", "tcUrl":
+            value, ok := item.value.value.([]byte)
+            if !ok {
+                return errors.New("invalid AMF0 connect property: " + item.name)
+            }
+            if item.name == "app" {
+                app = string(value)
+            } else {
+                tcUrl = string(value)
+            }
         }
     }
+    server.app, server.tcUrl = app, tcUrl
+    server.changeState(STATE_RTMP_CONNECTING)
 
     buf := makeSetChunkSize(server.writeChunkSize)
     bufs := server.userCtrlChan.writeData(buf, SET_CHUNK_SIZE, 0, 0)
@@ -358,46 +374,59 @@ func (server *RtmpServerHandle) handleConnect(data []byte) error {
     return server.output(bufs)
 }
 
-func (server *RtmpServerHandle) handleReleaseStream(data []byte) {
-    items, _ := decodeAmf0(data)
-    if len(items) == 0 {
-        return
+func (server *RtmpServerHandle) handleReleaseStream(args []amf0Item) error {
+    if len(args) < 3 {
+        return errors.New("missing AMF0 releaseStream name")
     }
-    streamName := string(items[len(items)-1].value.([]byte))
+    name, ok := args[2].value.([]byte)
+    if !ok {
+        return errors.New("invalid AMF0 releaseStream name")
+    }
     if server.onRelease != nil {
-        server.onRelease(server.app, streamName)
+        server.onRelease(server.app, string(name))
     }
+    return nil
 }
 
-func (server *RtmpServerHandle) handleCreateStream(data []byte) error {
-    items, _ := decodeAmf0(data)
-    if len(items) == 0 {
-        return nil
-    }
-    tid := uint32(items[0].value.(float64))
+func (server *RtmpServerHandle) handleCreateStream(args []amf0Item) error {
+    tid := uint32(args[0].value.(float64))
     bufs := server.cmdChan.writeData(makeCreateStreamRes(tid, server.streamId), Command_AMF0, 0, 0)
     return server.output(bufs)
 }
 
-func (server *RtmpServerHandle) handlePlay(data []byte) error {
-    items, _ := decodeAmf0(data)
-    tid := int(items[0].value.(float64))
-    streamName := string(items[2].value.([]byte))
-    server.streamName = streamName
+func (server *RtmpServerHandle) handlePlay(args []amf0Item) error {
+    if len(args) < 3 {
+        return errors.New("missing AMF0 play stream name")
+    }
+    name, ok := args[2].value.([]byte)
+    if !ok {
+        return errors.New("invalid AMF0 play stream name")
+    }
+    tid := int(args[0].value.(float64))
     start := float64(-2)
     duration := float64(-1)
     reset := false
 
-    if len(items) > 3 {
-        start = items[3].value.(float64)
+    if len(args) > 3 {
+        start, ok = args[3].value.(float64)
+        if !ok {
+            return errors.New("invalid AMF0 play start")
+        }
     }
-    if len(items) > 4 {
-        duration = items[4].value.(float64)
+    if len(args) > 4 {
+        duration, ok = args[4].value.(float64)
+        if !ok {
+            return errors.New("invalid AMF0 play duration")
+        }
     }
-
-    if len(items) > 5 {
-        reset = items[5].value.(bool)
+    if len(args) > 5 {
+        reset, ok = args[5].value.(bool)
+        if !ok {
+            return errors.New("invalid AMF0 play reset")
+        }
     }
+    streamName := string(name)
+    server.streamName = streamName
 
     code := NETSTREAM_PLAY_START
     if server.onPlay != nil {
@@ -424,10 +453,16 @@ func (server *RtmpServerHandle) handlePlay(data []byte) error {
     return nil
 }
 
-func (server *RtmpServerHandle) handlePublish(data []byte) error {
-    items, _ := decodeAmf0(data)
-    tid := int(items[0].value.(float64))
-    streamName := string(items[2].value.([]byte))
+func (server *RtmpServerHandle) handlePublish(args []amf0Item) error {
+    if len(args) < 3 {
+        return errors.New("missing AMF0 publish stream name")
+    }
+    name, ok := args[2].value.([]byte)
+    if !ok {
+        return errors.New("invalid AMF0 publish stream name")
+    }
+    tid := int(args[0].value.(float64))
+    streamName := string(name)
     server.streamName = streamName
     code := NETSTREAM_PUBLISH_START
     if server.onPublish != nil {

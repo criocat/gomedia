@@ -355,18 +355,23 @@ func (cli *RtmpClient) handleUserEvent(data []byte) error {
 }
 
 func (cli *RtmpClient) handleCommandRes(data []byte) error {
-	item := amf0Item{}
-	l := item.decode(data)
-	data = data[l:]
-	cmd := string(item.value.([]byte))
+	cmd, args, err := decodeCommand(data)
+	if err != nil {
+		return err
+	}
 	switch cmd {
 	case "_result":
-		return cli.handleResult(data)
+		if len(args) == 0 || args[0].amfType != AMF0_NUMBER {
+			return errors.New("invalid AMF0 result transaction ID")
+		}
+		if args[0].value.(float64) != float64(cli.lastMethodTid) {
+			return nil
+		}
+		return cli.handleResult(args)
 	case "_error":
-		return cli.handleError(data)
+		return cli.handleError(args)
 	case "onStatus":
-		return cli.handleStatus(data)
-	default:
+		return cli.handleStatus(args)
 	}
 	return nil
 }
@@ -402,30 +407,20 @@ func (cli *RtmpClient) handleAudioMessage(msg *rtmpMessage) error {
 	return cli.audioDemuxer.Decode(msg.msg)
 }
 
-func (cli *RtmpClient) handleResult(data []byte) error {
+func (cli *RtmpClient) handleResult(args []amf0Item) error {
 	switch cli.lastMethod {
 
 	case CONNECT:
-		return cli.handleConnectResponse(data)
+		return cli.handleConnectResponse()
 	case CREATE_STREAM:
-		return cli.handleCreateStreamResponse(data)
+		return cli.handleCreateStreamResponse(args)
 	case GET_STREAM_LENGTH:
 		//TODO
 	}
 	return nil
 }
 
-func (cli *RtmpClient) handleConnectResponse(data []byte) error {
-
-	items, _ := decodeAmf0(data)
-	if len(items) > 0 {
-		if tid, ok := items[0].value.(float64); ok {
-			if cli.lastMethodTid != int(tid) {
-				return nil
-			}
-		}
-	}
-
+func (cli *RtmpClient) handleConnectResponse() error {
 	cli.lastMethod = CREATE_STREAM
 	cli.lastMethodTid = 2
 	if !cli.isPublish {
@@ -450,19 +445,15 @@ func (cli *RtmpClient) handleConnectResponse(data []byte) error {
 	}
 }
 
-func (cli *RtmpClient) handleCreateStreamResponse(data []byte) error {
-
-	items, _ := decodeAmf0(data)
-	if len(items) > 0 {
-		if tid, ok := items[0].value.(float64); ok {
-			if cli.lastMethodTid != int(tid) {
-				return nil
-			}
-		}
-		if sid, ok := items[len(items)-1].value.(float64); ok {
-			cli.streamId = uint32(sid)
-		}
+func (cli *RtmpClient) handleCreateStreamResponse(args []amf0Item) error {
+	if len(args) < 3 {
+		return errors.New("missing AMF0 stream ID")
 	}
+	sid, ok := args[2].value.(float64)
+	if !ok || !(sid >= 0 && sid <= float64(^uint32(0))) || sid != float64(uint32(sid)) {
+		return errors.New("invalid AMF0 stream ID")
+	}
+	cli.streamId = uint32(sid)
 
 	if !cli.isPublish {
 		cli.lastMethod = GET_STREAM_LENGTH
@@ -479,21 +470,32 @@ func (cli *RtmpClient) handleCreateStreamResponse(data []byte) error {
 	}
 }
 
-func (cli *RtmpClient) handleError(data []byte) error {
+func (cli *RtmpClient) handleError(args []amf0Item) error {
 	code := ""
 	describe := ""
-	_, objs := decodeAmf0(data)
-	for _, obj := range objs {
+	for _, arg := range args {
+		obj, ok := arg.value.(amfObject)
+		if !ok {
+			continue
+		}
 		for _, item := range obj.items {
 			if item.name == "code" {
-				code = string(item.value.value.([]byte))
-			} else if item.name == "describe" {
-				describe = string(item.value.value.([]byte))
-			}
-			if cli.onerror != nil {
-				cli.onerror(code, describe)
+				value, ok := item.value.value.([]byte)
+				if !ok {
+					return errors.New("invalid AMF0 code property")
+				}
+				code = string(value)
+			} else if item.name == "description" || item.name == "describe" {
+				value, ok := item.value.value.([]byte)
+				if !ok {
+					return errors.New("invalid AMF0 description property")
+				}
+				describe = string(value)
 			}
 		}
+	}
+	if cli.onerror != nil {
+		cli.onerror(code, describe)
 	}
 	if cli.isPublish {
 		cli.changeState(STATE_RTMP_PUBLISH_FAILED)
@@ -503,22 +505,37 @@ func (cli *RtmpClient) handleError(data []byte) error {
 	return nil
 }
 
-func (cli *RtmpClient) handleStatus(data []byte) error {
+func (cli *RtmpClient) handleStatus(args []amf0Item) error {
 	code := ""
 	level := ""
 	describe := ""
 
 	foundInfoObj := false
-	_, objs := decodeAmf0(data)
-	for _, obj := range objs {
+	for _, arg := range args {
+		obj, ok := arg.value.(amfObject)
+		if !ok {
+			continue
+		}
 		for _, item := range obj.items {
 			if item.name == "code" {
 				foundInfoObj = true
-				code = string(item.value.value.([]byte))
+				value, ok := item.value.value.([]byte)
+				if !ok {
+					return errors.New("invalid AMF0 code property")
+				}
+				code = string(value)
 			} else if item.name == "level" {
-				level = string(item.value.value.([]byte))
+				value, ok := item.value.value.([]byte)
+				if !ok {
+					return errors.New("invalid AMF0 level property")
+				}
+				level = string(value)
 			} else if item.name == "description" {
-				describe = string(item.value.value.([]byte))
+				value, ok := item.value.value.([]byte)
+				if !ok {
+					return errors.New("invalid AMF0 description property")
+				}
+				describe = string(value)
 			}
 		}
 	}

@@ -2,7 +2,7 @@ package rtmp
 
 import (
 	"encoding/binary"
-	"fmt"
+	"errors"
 	"math"
 )
 
@@ -38,7 +38,7 @@ type amf0Item struct {
 	value   interface{}
 }
 
-func (amf *amf0Item) encode() []byte {
+func (amf amf0Item) encode() []byte {
 	buf := make([]byte, amf.length+4+8)
 	switch amf.amfType {
 	case AMF0_NUMBER:
@@ -90,127 +90,116 @@ func (amf *amf0Item) encode() []byte {
 }
 
 func (amf *amf0Item) decode(data []byte) int {
-	if len(data) == 0 {
+	return amf.decodeAt(data, 0)
+}
+
+func (amf *amf0Item) decodeAt(data []byte, depth int) int {
+	if len(data) == 0 || depth > 32 {
 		return 0
 	}
-	amf.amfType = AMF0_DATA_TYPE(data[0])
+	*amf = amf0Item{amfType: AMF0_DATA_TYPE(data[0])}
 	switch amf.amfType {
 	case AMF0_NUMBER:
 		if len(data) < 9 {
-			return 1
+			return 0
 		}
+		amf.value = math.Float64frombits(binary.BigEndian.Uint64(data[1:]))
 		amf.length = 8
-		v := math.Float64frombits(binary.BigEndian.Uint64(data[1:]))
-		amf.value = v
 		return 9
 	case AMF0_BOOLEAN:
 		if len(data) < 2 {
-			return 1
+			return 0
 		}
+		amf.value = data[1] == 1
 		amf.length = 1
-		if data[1] == 1 {
-			amf.value = true
-		} else {
-			amf.value = false
-		}
 		return 2
-	case AMF0_STRING:
-		if len(data) < 3 {
-			return 1
+	case AMF0_NULL, AMF0_UNDEFINED:
+		return 1
+	case AMF0_STRING, AMF0_LONG_STRING:
+		pos := 3
+		if len(data) < pos {
+			return 0
 		}
-		amf.length = int(binary.BigEndian.Uint16(data[1:]))
-		if len(data[3:]) < amf.length {
-			return 1
-		}
-		str := make([]byte, amf.length)
-		copy(str, data[3:3+amf.length])
-		amf.value = str
-		return 3 + amf.length
-	case AMF0_OBJECT:
-		amf.value = make(map[string]interface{})
-		pos := 1
-		for {
-			if len(data[pos:]) < 3 {
-				return pos
-			}
-			if data[pos] == 0x00 && data[pos+1] == 0x00 && data[pos+2] == byte(AMF0_OBJECT_END) {
-				return pos + 3
-			}
-			if len(data[pos:]) < 2 {
-				return pos
-			}
-			length := int(binary.BigEndian.Uint16(data[pos:]))
-			if len(data[pos+2:]) < length {
-				return pos
-			}
-			key := string(data[pos+2 : pos+2+length])
-			pos += 2 + length
-
-			if len(data[pos:]) == 0 {
-				return pos
-			}
-			valueItem := &amf0Item{}
-			valueLength := valueItem.decode(data[pos:])
-			if valueLength == 0 {
+		size := uint32(binary.BigEndian.Uint16(data[1:]))
+		if amf.amfType == AMF0_LONG_STRING {
+			pos = 5
+			if len(data) < pos {
 				return 0
 			}
-			amf.value.(map[string]interface{})[key] = valueItem.value
-			pos += valueLength
+			size = binary.BigEndian.Uint32(data[1:])
 		}
-	case AMF0_NULL:
-	case AMF0_LONG_STRING:
-		if len(data) < 5 {
-			return 1
+		if uint64(size) > uint64(len(data)-pos) {
+			return 0
 		}
-		amf.length = int(binary.BigEndian.Uint32(data[1:]))
-		if len(data[5:]) < amf.length {
-			return 1
+		amf.length = int(size)
+		amf.value = append([]byte(nil), data[pos:pos+amf.length]...)
+		return pos + amf.length
+	case AMF0_OBJECT, AMF0_ECMA_ARRAY:
+		pos := 1
+		if amf.amfType == AMF0_ECMA_ARRAY {
+			pos = 5 // The property count is advisory.
 		}
-		str := make([]byte, amf.length)
-		copy(str, data[5:5+amf.length])
-		amf.value = str
-		return 5 + amf.length
-	case AMF0_UNDEFINED:
-	case AMF0_ECMA_ARRAY:
-		if len(data) < 5 {
-			return 1
+		var object amfObject
+		for len(data)-pos >= 3 {
+			size := int(binary.BigEndian.Uint16(data[pos:]))
+			if size == 0 && data[pos+2] == byte(AMF0_OBJECT_END) {
+				amf.value = object
+				return pos + 3
+			}
+			pos += 2
+			if size > len(data)-pos {
+				return 0
+			}
+			property := &amfObjectItem{name: string(data[pos : pos+size])}
+			pos += size
+			n := property.value.decodeAt(data[pos:], depth+1)
+			if n == 0 {
+				return 0
+			}
+			object.items = append(object.items, property)
+			pos += n
 		}
-		return 5
 	case AMF0_STRICT_ARRAY:
-		return amf.decodeStringArray(data)
-	default:
-		panic(fmt.Sprintf("unsupport amf type %d", amf.amfType))
+		if len(data) < 5 {
+			return 0
+		}
+		count := binary.BigEndian.Uint32(data[1:])
+		pos := 5
+		if uint64(count) > uint64(len(data)-pos) {
+			return 0
+		}
+		var values []amf0Item
+		for i := uint32(0); i < count; i++ {
+			var item amf0Item
+			n := item.decodeAt(data[pos:], depth+1)
+			if n == 0 {
+				return 0
+			}
+			pos += n
+			values = append(values, item)
+		}
+		amf.value = values
+		return pos
 	}
-	return 1
+	return 0
 }
 
-// Enhanced RTMP fourCcList uses an AMF0 strict array of strings.
-func (amf *amf0Item) decodeStringArray(data []byte) int {
-	if len(data) < 5 {
-		return 0
+func decodeCommand(data []byte) (string, []amf0Item, error) {
+	var name amf0Item
+	n := name.decode(data)
+	if n == 0 || name.amfType != AMF0_STRING {
+		return "", nil, errors.New("invalid AMF0 command name")
 	}
-	count := binary.BigEndian.Uint32(data[1:5])
-	// Each encoded string occupies at least three bytes.
-	if uint64(count) > uint64((len(data)-5)/3) {
-		return 0
-	}
-
-	pos := 5
-	var values []amf0Item
-	for i := uint32(0); i < count; i++ {
-		if pos == len(data) || AMF0_DATA_TYPE(data[pos]) != AMF0_STRING {
-			return 0
+	var args []amf0Item
+	for data = data[n:]; len(data) > 0; data = data[n:] {
+		var arg amf0Item
+		n = arg.decode(data)
+		if n == 0 {
+			return "", nil, errors.New("invalid AMF0 command argument")
 		}
-		var item amf0Item
-		size := item.decode(data[pos:])
-		if size < 3 {
-			return 0
-		}
-		pos += size
-		values = append(values, item)
+		args = append(args, arg)
 	}
-	amf.value = values
-	return pos
+	return string(name.value.([]byte)), args, nil
 }
 
 func makeStringItem(str string) amf0Item {
@@ -247,7 +236,7 @@ type amfObject struct {
 	items []*amfObjectItem
 }
 
-func (object *amfObject) encode() []byte {
+func (object amfObject) encode() []byte {
 	obj := make([]byte, 1)
 	obj[0] = byte(AMF0_OBJECT)
 	for _, item := range object.items {
@@ -259,73 +248,4 @@ func (object *amfObject) encode() []byte {
 	}
 	obj = append(obj, EndObj...)
 	return obj
-}
-
-func (object *amfObject) decode(data []byte) int {
-	total := 1
-	data = data[1:]
-	isArray := false
-	for len(data) > 0 {
-		if len(data) < 3 {
-			return 0
-		}
-		if data[0] == 0x00 && data[1] == 0x00 && data[2] == byte(AMF0_OBJECT_END) {
-			total += 3
-			if isArray {
-				isArray = false
-				continue
-			} else {
-				break
-			}
-		}
-		length := int(binary.BigEndian.Uint16(data))
-		if length >= len(data)-2 {
-			return 0
-		}
-		name := string(data[2 : 2+length])
-		item := amf0Item{}
-		l := item.decode(data[2+length:])
-		if l == 0 {
-			return 0
-		}
-		if item.amfType == AMF0_ECMA_ARRAY {
-			isArray = true
-		} else {
-			obj := &amfObjectItem{
-				name:  name,
-				value: item,
-			}
-			object.items = append(object.items, obj)
-		}
-		data = data[2+length+l:]
-		total += 2 + length + l
-	}
-	return total
-}
-
-func decodeAmf0(data []byte) (items []amf0Item, objs []amfObject) {
-	for len(data) > 0 {
-		switch AMF0_DATA_TYPE(data[0]) {
-		case AMF0_ECMA_ARRAY:
-			data = data[5:]
-			fallthrough
-		case AMF0_OBJECT:
-			obj := amfObject{}
-			l := obj.decode(data)
-			if l == 0 {
-				return nil, nil
-			}
-			data = data[l:]
-			objs = append(objs, obj)
-		default:
-			item := amf0Item{}
-			l := item.decode(data)
-			if l == 0 {
-				return nil, nil
-			}
-			data = data[l:]
-			items = append(items, item)
-		}
-	}
-	return
 }
