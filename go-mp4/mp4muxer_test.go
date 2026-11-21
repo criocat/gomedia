@@ -1,6 +1,7 @@
 package mp4
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -13,6 +14,108 @@ import (
 	"github.com/yapingcat/gomedia/go-codec"
 	"github.com/yapingcat/gomedia/go-mpeg2"
 )
+
+func TestMP4H264ParameterSetUpdates(t *testing.T) {
+	// libx264 SPS for 16x16 and 32x16, both with ID 0.
+	initialSPS := []byte{0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xda, 0x7b, 0x01, 0x10,
+		0, 0, 3, 0, 0x10, 0, 0, 3, 0, 0x20, 0xf1, 0x22, 0x6a}
+	updatedSPS := []byte{0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0a, 0xda, 0x2e, 0xc0, 0x44,
+		0, 0, 3, 0, 4, 0, 0, 3, 0, 8, 0x3c, 0x48, 0x9a, 0x80}
+	initialPPS := []byte{0, 0, 0, 1, 0x68, 0xce, 0x0f, 0xc8}
+	updatedPPS := []byte{0, 0, 0, 1, 0x68, 0xce, 0x0f, 0x24, 0x80}
+	idr := []byte{0, 0, 0, 1, 0x65, 0x88, 0x84, 0x3a, 0x26, 0x28, 0, 0x09, 0x02, 0xc9, 0xe0}
+	for _, tc := range []struct {
+		name       string
+		fragmented bool
+		sps        []byte
+		pps        []byte
+		entry      string
+	}{
+		{"stable", false, initialSPS, initialPPS, "avc1"},
+		{"changed SPS", false, updatedSPS, initialPPS, "avc3"},
+		{"changed PPS", false, initialSPS, updatedPPS, "avc3"},
+		{"changed SPS in a later fragment", true, updatedSPS, initialPPS, "avc3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file, err := os.CreateTemp(t.TempDir(), "parameter-sets-*.mp4")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			var opts []MuxerOption
+			if tc.fragmented {
+				opts = append(opts, WithMp4Flag(MP4_FLAG_FRAGMENT))
+			}
+			muxer, err := CreateMp4Muxer(file, opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := muxer.AddVideoTrack(MP4_CODEC_H264)
+			if err := muxer.Write(id, bytes.Join([][]byte{initialSPS, initialPPS, idr}, nil), 0, 0); err != nil {
+				t.Fatal(err)
+			}
+			if tc.fragmented {
+				if err := muxer.FlushFragment(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Supply the parameter sets separately, with three-byte start codes.
+			if err := muxer.Write(id, bytes.Join([][]byte{tc.sps[1:], tc.pps[1:]}, nil), 40, 40); err != nil {
+				t.Fatal(err)
+			}
+			for _, dts := range []uint64{40, 80} {
+				if err := muxer.Write(id, append([]byte(nil), idr...), dts, dts); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := muxer.WriteTrailer(); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(file.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pos := bytes.Index(data, []byte("stsd")); pos < 0 || string(data[pos+16:pos+20]) != tc.entry {
+				t.Fatalf("expected a %s sample description", tc.entry)
+			}
+			demuxer := CreateMp4Demuxer(bytes.NewReader(data))
+			infos, err := demuxer.ReadHead()
+			if err != nil || len(infos) != 1 || infos[0].SampleCount != 3 {
+				t.Fatalf("MP4 tracks = %+v, err = %v", infos, err)
+			}
+			extra := demuxer.tracks[0].extra.(*h264ExtraData)
+			if len(extra.spss) != 1 || !bytes.Equal(extra.spss[0], initialSPS) ||
+				len(extra.ppss) != 1 || !bytes.Equal(extra.ppss[0], initialPPS) {
+				t.Fatal("avcC must preserve the initial SPS and PPS")
+			}
+			want := [][]byte{idr, idr, idr}
+			if tc.entry == "avc3" {
+				want[1] = bytes.Join([][]byte{tc.sps, tc.pps, idr}, nil)
+				want[2] = want[1]
+			}
+			for i, sample := range demuxer.tracks[0].samplelist {
+				wire := data[sample.offset : sample.offset+sample.size]
+				if !bytes.Equal(wire, annexBToMP4TestSample(want[i])) {
+					t.Errorf("sample %d: bytes = %x, want NALs %x", i, wire, want[i])
+				}
+				packet, err := demuxer.ReadPacket()
+				if err != nil || packet.Cid != MP4_CODEC_H264 || len(packet.Data) == 0 {
+					t.Fatalf("read sample %d: packet=%v err=%v", i, packet, err)
+				}
+			}
+		})
+	}
+}
+
+func annexBToMP4TestSample(annexB []byte) []byte {
+	var sample bytes.Buffer
+	codec.SplitFrame(annexB, func(nal []byte) bool {
+		_ = binary.Write(&sample, binary.BigEndian, uint32(len(nal)))
+		sample.Write(nal)
+		return true
+	})
+	return sample.Bytes()
+}
 
 func TestMP4HeaderTimesUseUTC(t *testing.T) {
 	epoch := time.Date(1904, time.January, 1, 0, 0, 0, 0, time.UTC).Unix()

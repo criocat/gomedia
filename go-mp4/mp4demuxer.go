@@ -181,7 +181,7 @@ func (demuxer *MovDemuxer) ReadHead() ([]TrackInfo, error) {
 		case mov_tag([4]byte{'s', 'c', 'h', 'i'}):
 		case mov_tag([4]byte{'t', 'e', 'n', 'c'}):
 			err = decodeTencBox(demuxer, uint32(basebox.Size))
-        case mov_tag([4]byte{'a', 'v', 'c', '1'}):
+        case mov_tag([4]byte{'a', 'v', 'c', '1'}), mov_tag([4]byte{'a', 'v', 'c', '3'}):
             demuxer.tracks[len(demuxer.tracks)-1].cid = MP4_CODEC_H264
             demuxer.tracks[len(demuxer.tracks)-1].extra = new(h264ExtraData)
             err = decodeVisualSampleEntry(demuxer)

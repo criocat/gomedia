@@ -311,6 +311,9 @@ func (entry *SampleDescriptionBox) Encode() (int, []byte) {
 
 func makeStsd(track *mp4track, handler_type HandlerType) []byte {
 
+    if track.cid == MP4_CODEC_H264 {
+        track.sealH264Configuration()
+    }
     var avbox []byte
     var extraData []byte
     if len(track.extraData) == 0 {
@@ -337,7 +340,11 @@ func makeStsd(track *mp4track, handler_type HandlerType) []byte {
     var se []byte
     var offset int
     if handler_type.equal(vide) {
-        entry := NewVisualSampleEntry(getCodecNameWithCodecId(track.cid))
+        name := getCodecNameWithCodecId(track.cid)
+        if track.cid == MP4_CODEC_H264 && track.extra.(*h264ExtraData).inBand {
+            name = [4]byte{'a', 'v', 'c', '3'}
+        }
+        entry := NewVisualSampleEntry(name)
         entry.width = uint16(track.width)
         entry.height = uint16(track.height)
         entry.entry.box.Size = entry.Size() + uint64(len(avbox))

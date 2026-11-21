@@ -158,6 +158,12 @@ func (muxer *Movmuxer) addTrack(cid MP4_CODEC_TYPE, options ...TrackOption) uint
         opt(track)
     }
 
+    if cid == MP4_CODEC_H264 {
+        extra := track.extra.(*h264ExtraData)
+        // Fragmented output may write the sample description before later updates.
+        extra.inBand = muxer.movFlag.isFragment() || muxer.movFlag.isDash()
+        extra.sealed = len(track.extraData) != 0
+    }
     return track.trackId
 }
 

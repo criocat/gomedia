@@ -1,6 +1,8 @@
 package mp4
 
 import (
+    "bytes"
+    "encoding/binary"
     "errors"
     "io"
 
@@ -36,12 +38,18 @@ type extraData interface {
 }
 
 type h264ExtraData struct {
-    spss [][]byte
-    ppss [][]byte
+    spss          [][]byte
+    ppss          [][]byte
+    sealed        bool
+    inBand        bool
+    updated       bool
+    pendingUpdate bool
 }
 
 func (extra *h264ExtraData) export() []byte {
-    data, _ := codec.CreateH264AVCCExtradata(extra.spss, extra.ppss)
+    spss := append([][]byte(nil), extra.spss...)
+    ppss := append([][]byte(nil), extra.ppss...)
+    data, _ := codec.CreateH264AVCCExtradata(spss, ppss)
     return data
 }
 
@@ -298,26 +306,51 @@ func (track *mp4track) writeSample(sample []byte, pts, dts uint64) (err error) {
     return err
 }
 
-func (track *mp4track) writeH264(h264 []byte, pts, dts uint64) (err error) {
-    h264extra, ok := track.extra.(*h264ExtraData)
-    if !ok {
-        panic("must init h264ExtraData first")
+func (track *mp4track) sealH264Configuration() {
+    extra := track.extra.(*h264ExtraData)
+    if !extra.sealed {
+        if len(track.extraData) == 0 {
+            track.extraData = extra.export()
+        }
+        extra.sealed = true
     }
+}
+
+func updateH264ParameterSet(sets *[][]byte, nalu []byte, getID func([]byte) uint64) bool {
+    start, length := codec.FindStartCode(nalu, 0)
+    payload := nalu[start+int(length):]
+    id := getID(payload)
+    for i, set := range *sets {
+        if getID(set[4:]) != id {
+            continue
+        }
+        if bytes.Equal(set[4:], payload) {
+            return false
+        }
+        (*sets)[i] = append([]byte{0, 0, 0, 1}, payload...)
+        return true
+    }
+    *sets = append(*sets, append([]byte{0, 0, 0, 1}, payload...))
+    return true
+}
+
+func (track *mp4track) writeH264(h264 []byte, pts, dts uint64) (err error) {
+    extra := track.extra.(*h264ExtraData)
     codec.SplitFrameWithStartCode(h264, func(nalu []byte) bool {
-        nalu_type := codec.H264NaluType(nalu)
-        switch nalu_type {
-        case codec.H264_NAL_SPS:
-            spsid := codec.GetSPSIdWithStartCode(nalu)
-            for _, sps := range h264extra.spss {
-                if spsid == codec.GetSPSIdWithStartCode(sps) {
-                    return true
-                }
+        nalType := codec.H264NaluType(nalu)
+        sample := track.lastSample
+        if sample.hasVcl && isH264NewAccessUnit(nalu) {
+            if err = track.flush(); err != nil {
+                return false
             }
-            tmp := make([]byte, len(nalu))
-            copy(tmp, nalu)
-            h264extra.spss = append(h264extra.spss, tmp)
+        }
+
+        var changed bool
+        switch nalType {
+        case codec.H264_NAL_SPS:
+            changed = updateH264ParameterSet(&extra.spss, nalu, codec.GetSPSId)
             if track.width == 0 || track.height == 0 {
-                width, height := codec.GetH264Resolution(h264extra.spss[0])
+                width, height := codec.GetH264Resolution(nalu)
                 if track.width == 0 {
                     track.width = width
                 }
@@ -326,53 +359,49 @@ func (track *mp4track) writeH264(h264 []byte, pts, dts uint64) (err error) {
                 }
             }
         case codec.H264_NAL_PPS:
-            ppsid := codec.GetPPSIdWithStartCode(nalu)
-            for _, pps := range h264extra.ppss {
-                if ppsid == codec.GetPPSIdWithStartCode(pps) {
-                    return true
+            changed = updateH264ParameterSet(&extra.ppss, nalu, codec.GetPPSId)
+        default:
+            if codec.IsH264VCLNaluType(nalType) {
+                if !sample.hasVcl {
+                    track.sealH264Configuration()
+                    if extra.pendingUpdate || (extra.updated && nalType == codec.H264_NAL_I_SLICE) {
+                        // Put the active configuration ahead of any cached SEI and VCL data.
+                        var configuration []byte
+                        for _, sets := range [][][]byte{extra.spss, extra.ppss} {
+                            for _, set := range sets {
+                                configuration = appendMP4NAL(configuration, set)
+                            }
+                        }
+                        sample.cache = append(configuration, sample.cache...)
+                        extra.pendingUpdate = false
+                        extra.inBand = true
+                    }
                 }
+                sample.pts = pts
+                sample.dts = dts
+                sample.hasVcl = true
+                sample.isKey = nalType == codec.H264_NAL_I_SLICE
             }
-            tmp := make([]byte, len(nalu))
-            copy(tmp, nalu)
-            h264extra.ppss = append(h264extra.ppss, tmp)
+            sample.cache = appendMP4NAL(sample.cache, nalu)
+            return true
         }
-        //aud/sps/pps/sei 为帧间隔
-        //通过first_slice_in_mb来判断，改nalu是否为一帧的开头
-        if track.lastSample.hasVcl && isH264NewAccessUnit(nalu) {
-            var currentOffset int64
-            if currentOffset, err = track.writer.Seek(0, io.SeekCurrent); err != nil {
-                return false
-            }
-            entry := sampleEntry{
-                pts:                    track.lastSample.pts,
-                dts:                    track.lastSample.dts,
-                size:                   0,
-                isKeyFrame:             track.lastSample.isKey,
-                SampleDescriptionIndex: 1,
-                offset:                 uint64(currentOffset),
-            }
-            n := 0
-            if n, err = track.writer.Write(track.lastSample.cache); err != nil {
-                return false
-            }
-            entry.size = uint64(n)
-            track.addSampleEntry(entry)
-            track.lastSample.cache = track.lastSample.cache[:0]
-            track.lastSample.hasVcl = false
+
+        if changed && extra.sealed {
+            extra.updated = true
+            extra.pendingUpdate = true
         }
-        if codec.IsH264VCLNaluType(nalu_type) {
-            track.lastSample.pts = pts
-            track.lastSample.dts = dts
-            track.lastSample.hasVcl = true
-            track.lastSample.isKey = false
-            if nalu_type == codec.H264_NAL_I_SLICE {
-                track.lastSample.isKey = true
-            }
-        }
-        track.lastSample.cache = append(track.lastSample.cache, codec.ConvertAnnexBToAVCC(nalu)...)
         return true
     })
     return
+}
+
+func appendMP4NAL(dst, nalu []byte) []byte {
+    start, length := codec.FindStartCode(nalu, 0)
+    payload := nalu[start+int(length):]
+    var size [4]byte
+    binary.BigEndian.PutUint32(size[:], uint32(len(payload)))
+    dst = append(dst, size[:]...)
+    return append(dst, payload...)
 }
 
 func (track *mp4track) writeH265(h265 []byte, pts, dts uint64) (err error) {
