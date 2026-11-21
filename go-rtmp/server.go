@@ -239,6 +239,9 @@ func (server *RtmpServerHandle) WriteAudio(cid codec.CodecID, frame []byte, pts,
 }
 
 func (server *RtmpServerHandle) WriteVideo(cid codec.CodecID, frame []byte, pts, dts uint32) error {
+    if cid != codec.CODECID_VIDEO_H264 && cid != codec.CODECID_VIDEO_H265 {
+        return errors.New("unsupported outgoing video codec")
+    }
     if server.videoMuxer != nil && server.videoWriteCodec != cid {
         return errors.New("outgoing video codec changed; reconnect required")
     }

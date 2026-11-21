@@ -256,6 +256,9 @@ func (cli *RtmpClient) WriteAudio(cid codec.CodecID, frame []byte, pts, dts uint
 }
 
 func (cli *RtmpClient) WriteVideo(cid codec.CodecID, frame []byte, pts, dts uint32) error {
+	if cid != codec.CODECID_VIDEO_H264 && cid != codec.CODECID_VIDEO_H265 {
+		return errors.New("unsupported outgoing video codec")
+	}
 	if cli.videoMuxer != nil && cli.videoWriteCodec != cid {
 		return errors.New("outgoing video codec changed; reconnect required")
 	}

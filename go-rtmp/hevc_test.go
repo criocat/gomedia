@@ -229,6 +229,42 @@ func TestHEVCWriteFrameRejectCodecSwitch(t *testing.T) {
 	}
 }
 
+func TestRTMPWriteVideoRejectUnsupportedCodec(t *testing.T) {
+	server, client := NewRtmpServerHandle(), NewRtmpClient()
+	for _, endpoint := range []struct {
+		name      string
+		write     func(codec.CodecID, []byte, uint32, uint32) error
+		setOutput func(OutputCB)
+	}{
+		{"client", client.WriteVideo, client.SetOutput},
+		{"server", server.WriteVideo, server.SetOutput},
+	} {
+		t.Run(endpoint.name, func(t *testing.T) {
+			writes := 0
+			endpoint.setOutput(func([]byte) error {
+				writes++
+				return nil
+			})
+			reject := func() {
+				t.Helper()
+				before := writes
+				if err := endpoint.write(codec.CODECID_UNRECOGNIZED, nil, 0, 0); err == nil || err.Error() != "unsupported outgoing video codec" {
+					t.Fatalf("unsupported video codec: got %v", err)
+				}
+				if writes != before {
+					t.Fatal("unsupported video codec produced output")
+				}
+			}
+			reject()
+			frame := []byte{0, 0, 0, 1, 0x65, 0x80}
+			if err := endpoint.write(codec.CODECID_VIDEO_H264, frame, 0, 0); err != nil {
+				t.Fatalf("valid video codec after rejection: %v", err)
+			}
+			reject()
+		})
+	}
+}
+
 func TestHEVCWriteFrameOutputError(t *testing.T) {
 	data, err := os.ReadFile("../go-flv/testdata/hevc-aac.flv")
 	if err != nil {
