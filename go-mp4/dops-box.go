@@ -30,14 +30,13 @@ type ChannelMappingTable struct {
 }
 
 type OpusSpecificBox struct {
-	Box                  *BasicBox
-	Version              uint8
-	OutputChannelCount   uint8
-	PreSkip              uint16
-	InputSampleRate      uint32
-	OutputGain           int16
-	ChannelMappingFamily uint8
-	ChanMapTable         *ChannelMappingTable
+	Box                *BasicBox
+	Version            uint8
+	OutputChannelCount uint8
+	PreSkip            uint16
+	InputSampleRate    uint32
+	OutputGain         int16
+	ChanMapTable       *ChannelMappingTable
 }
 
 func NewdOpsBox() *OpusSpecificBox {
@@ -55,16 +54,20 @@ func (dops *OpusSpecificBox) Size() uint64 {
 }
 
 func (dops *OpusSpecificBox) Encode() (int, []byte) {
-	family := dops.ChannelMappingFamily
+	family := uint8(0)
+	if dops.ChanMapTable != nil {
+		family = 1
+	}
+	return dops.EncodeWithChannelMappingFamily(family)
+}
+
+// EncodeWithChannelMappingFamily writes the specified mapping family.
+func (dops *OpusSpecificBox) EncodeWithChannelMappingFamily(family uint8) (int, []byte) {
 	table := dops.ChanMapTable
-	if table != nil {
-		if len(table.ChannelMapping) != int(dops.OutputChannelCount) {
-			return 0, nil
-		}
-		if family == 0 {
-			family = 1 // Default for callers that supply a table without a family.
-		}
-	} else if family != 0 {
+	if (family == 0) != (table == nil) {
+		return 0, nil
+	}
+	if table != nil && len(table.ChannelMapping) != int(dops.OutputChannelCount) {
 		return 0, nil
 	}
 	dops.Box.Size = dops.Size()
@@ -90,15 +93,22 @@ func (dops *OpusSpecificBox) Encode() (int, []byte) {
 }
 
 func (dops *OpusSpecificBox) Decode(r io.Reader, size uint32) (int, error) {
+	n, _, err := dops.DecodeWithChannelMappingFamily(r, size)
+	return n, err
+}
+
+// DecodeWithChannelMappingFamily reads the box and returns its mapping family
+// alongside the number of bytes read.
+func (dops *OpusSpecificBox) DecodeWithChannelMappingFamily(r io.Reader, size uint32) (int, uint8, error) {
 	var fields [11]byte
 	if size < BasicBoxLen+uint32(len(fields)) {
-		return 0, io.ErrUnexpectedEOF
+		return 0, 0, io.ErrUnexpectedEOF
 	}
 	if n, err := io.ReadFull(r, fields[:]); err != nil {
-		return n, err
+		return n, 0, err
 	}
 	if fields[0] != 0 {
-		return len(fields), errors.New("unsupported dOps version")
+		return len(fields), 0, errors.New("unsupported dOps version")
 	}
 	family := fields[10]
 	mappingSize := 0
@@ -106,13 +116,13 @@ func (dops *OpusSpecificBox) Decode(r io.Reader, size uint32) (int, error) {
 		mappingSize = 2 + int(fields[1])
 	}
 	if size != uint32(BasicBoxLen+len(fields)+mappingSize) {
-		return len(fields), errors.New("invalid dOps box size for channel mapping family")
+		return len(fields), 0, errors.New("invalid dOps box size for channel mapping family")
 	}
 	var table *ChannelMappingTable
 	if mappingSize > 0 {
 		data := make([]byte, mappingSize)
 		if n, err := io.ReadFull(r, data); err != nil {
-			return len(fields) + n, err
+			return len(fields) + n, 0, err
 		}
 		table = &ChannelMappingTable{StreamCount: data[0], CoupledCount: data[1], ChannelMapping: data[2:]}
 	}
@@ -122,28 +132,27 @@ func (dops *OpusSpecificBox) Decode(r io.Reader, size uint32) (int, error) {
 	dops.PreSkip = binary.BigEndian.Uint16(fields[2:])
 	dops.InputSampleRate = binary.BigEndian.Uint32(fields[4:])
 	dops.OutputGain = int16(binary.BigEndian.Uint16(fields[8:]))
-	dops.ChannelMappingFamily = family
 	dops.ChanMapTable = table
-	return len(fields) + mappingSize, nil
+	return len(fields) + mappingSize, family, nil
 }
 
-func opusSpecificBoxFromHead(extraData []byte) (*OpusSpecificBox, error) {
+func opusSpecificBoxFromHead(extraData []byte) (*OpusSpecificBox, uint8, error) {
 	if len(extraData) < 19 || string(extraData[:8]) != "OpusHead" || extraData[9] == 0 {
-		return nil, errors.New("invalid OpusHead")
+		return nil, 0, errors.New("invalid OpusHead")
 	}
 	dops := NewdOpsBox()
 	dops.OutputChannelCount = extraData[9]
 	dops.PreSkip = binary.LittleEndian.Uint16(extraData[10:])
 	dops.InputSampleRate = binary.LittleEndian.Uint32(extraData[12:])
 	dops.OutputGain = int16(binary.LittleEndian.Uint16(extraData[16:]))
-	dops.ChannelMappingFamily = extraData[18]
-	if dops.ChannelMappingFamily == 0 && dops.OutputChannelCount > 2 {
-		return nil, errors.New("OpusHead with more than two channels requires a channel mapping")
+	family := extraData[18]
+	if family == 0 && dops.OutputChannelCount > 2 {
+		return nil, 0, errors.New("OpusHead with more than two channels requires a channel mapping")
 	}
-	if dops.ChannelMappingFamily != 0 {
+	if family != 0 {
 		end := 21 + int(dops.OutputChannelCount)
 		if len(extraData) < end {
-			return nil, errors.New("incomplete OpusHead channel mapping")
+			return nil, 0, errors.New("incomplete OpusHead channel mapping")
 		}
 		dops.ChanMapTable = &ChannelMappingTable{
 			StreamCount:    extraData[19],
@@ -151,7 +160,7 @@ func opusSpecificBoxFromHead(extraData []byte) (*OpusSpecificBox, error) {
 			ChannelMapping: extraData[21:end],
 		}
 	}
-	return dops, nil
+	return dops, family, nil
 }
 
 func decodeOpusSampleEntry(demuxer *MovDemuxer, format [4]byte, size uint64) error {

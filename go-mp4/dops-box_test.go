@@ -50,18 +50,32 @@ func TestOpusSpecificBoxReadsFamilyZeroAndMappedChannels(t *testing.T) {
 			family: 1,
 			table:  &ChannelMappingTable{StreamCount: 2, CoupledCount: 1, ChannelMapping: []byte{0, 2, 1}},
 		},
+		{
+			body:   []byte{0, 3, 0x01, 0x38, 0, 0, 0xbb, 0x80, 0, 0, 255, 2, 1, 0, 2, 1},
+			family: 255,
+			table:  &ChannelMappingTable{StreamCount: 2, CoupledCount: 1, ChannelMapping: []byte{0, 2, 1}},
+		},
 	} {
 		box := NewdOpsBox()
-		read, err := box.Decode(bytes.NewReader(tc.body), BasicBoxLen+uint32(len(tc.body)))
+		read, family, err := box.DecodeWithChannelMappingFamily(bytes.NewReader(tc.body), BasicBoxLen+uint32(len(tc.body)))
 		if err != nil || read != len(tc.body) {
 			t.Fatalf("Decode read %d bytes: %v", read, err)
 		}
-		if box.ChannelMappingFamily != tc.family || !reflect.DeepEqual(box.ChanMapTable, tc.table) || box.PreSkip != 312 || box.InputSampleRate != 48000 {
-			t.Errorf("wrong dOps fields: %+v", box)
+		if family != tc.family || !reflect.DeepEqual(box.ChanMapTable, tc.table) || box.PreSkip != 312 || box.InputSampleRate != 48000 {
+			t.Errorf("wrong dOps fields: %+v, family %d", box, family)
 		}
-		written, wire := box.Encode()
+		written, wire := box.EncodeWithChannelMappingFamily(family)
 		if written != len(wire) || !bytes.Equal(wire[BasicBoxLen:], tc.body) {
 			t.Errorf("re-encoded dOps = %x, want body %x", wire, tc.body)
 		}
+	}
+}
+
+func TestOpusSpecificBoxSupportsLegacyPositionalLiteral(t *testing.T) {
+	box := OpusSpecificBox{NewBasicBox([4]byte{'d', 'O', 'p', 's'}), 0, 1, 312, 48000, 0, nil}
+	written, data := box.Encode()
+	want := []byte{0, 0, 0, 19, 'd', 'O', 'p', 's', 0, 1, 0x01, 0x38, 0, 0, 0xbb, 0x80, 0, 0, 0}
+	if written != len(want) || !bytes.Equal(data, want) {
+		t.Errorf("legacy literal encoded %x, want %x", data, want)
 	}
 }

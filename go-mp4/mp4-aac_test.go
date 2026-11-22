@@ -86,6 +86,56 @@ func TestMP4AACBatchTimestampsUseCumulativeSamples(t *testing.T) {
 	}
 }
 
+func TestMP4AACAcceptsID3BetweenFrames(t *testing.T) {
+	// ID3v2.4 title metadata as written by FFmpeg.
+	tag := []byte("ID3\x04\x00\x00\x00\x00\x00\x12TIT2\x00\x00\x00\x08\x00\x00\x03Review\x00")
+	tagWithFooter := append([]byte(nil), tag...)
+	tagWithFooter[5] = 0x10
+	tagWithFooter = append(tagWithFooter, []byte("3DI")...)
+	tagWithFooter = append(tagWithFooter, tagWithFooter[3:10]...)
+	for _, tc := range []struct {
+		name string
+		tag  []byte
+	}{
+		{name: "plain", tag: tag},
+		{name: "footer", tag: tagWithFooter},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			batch := append([]byte(nil), mp4TestAACFrame...)
+			batch = append(batch, tc.tag...)
+			batch = append(batch, mp4TestAACFrame...)
+			output := newFmp4WriterSeeker(4096)
+			muxer, err := CreateMp4Muxer(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := muxer.AddAudioTrack(MP4_CODEC_AAC)
+			if err := muxer.Write(id, batch, 0, 0); err != nil {
+				t.Fatal(err)
+			}
+			if err := muxer.WriteTrailer(); err != nil {
+				t.Fatal(err)
+			}
+			demuxer := CreateMp4Demuxer(bytes.NewReader(output.buffer))
+			if _, err := demuxer.ReadHead(); err != nil {
+				t.Fatal(err)
+			}
+			for _, wantDTS := range []uint64{0, 23} {
+				packet, err := demuxer.ReadPacket()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if packet.Dts != wantDTS || !bytes.Equal(packet.Data[7:], mp4TestAACFrame[7:]) {
+					t.Errorf("AAC payload %x at DTS %d, want original payload at %d", packet.Data[7:], packet.Dts, wantDTS)
+				}
+			}
+			if _, err := demuxer.ReadPacket(); !errors.Is(err, io.EOF) {
+				t.Errorf("ReadPacket after two packets returned %v, want EOF", err)
+			}
+		})
+	}
+}
+
 func TestMP4AACChannelConfigurationSevenHasEightChannels(t *testing.T) {
 	// One 48 kHz AAC-LC 7.1 frame produced by FFmpeg, with ADTS config 7.
 	frame := []byte{

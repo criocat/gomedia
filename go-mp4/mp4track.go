@@ -519,6 +519,14 @@ func (track *mp4track) writeAAC(aacframes []byte, pts, dts uint64) error {
     }
     var elapsedSamples, sampleRate uint64
     for len(aacframes) > 0 {
+        if bytes.HasPrefix(aacframes, []byte("ID3")) {
+            tagSize, err := id3v2TagSize(aacframes)
+            if err != nil {
+                return err
+            }
+            aacframes = aacframes[tagSize:]
+            continue
+        }
         if len(aacframes) < 7 || codec.FindSyncword(aacframes[:2], 0) != 0 {
             return errors.New("invalid AAC ADTS header")
         }
@@ -565,6 +573,29 @@ func (track *mp4track) writeAAC(aacframes []byte, pts, dts uint64) error {
         aacframes = aacframes[frameSize:]
     }
     return nil
+}
+
+func id3v2TagSize(data []byte) (int, error) {
+    const headerSize = 10
+    if len(data) < headerSize || data[3] < 2 || data[3] > 4 {
+        return 0, errors.New("invalid ID3v2 header")
+    }
+    // ID3v2 uses four synchsafe bytes for the body size.
+    size := 0
+    for _, octet := range data[6:headerSize] {
+        if octet&0x80 != 0 {
+            return 0, errors.New("invalid ID3v2 size")
+        }
+        size = size<<7 | int(octet)
+    }
+    size += headerSize
+    if data[3] == 4 && data[5]&0x10 != 0 {
+        size += headerSize
+    }
+    if size > len(data) {
+        return 0, io.ErrUnexpectedEOF
+    }
+    return size, nil
 }
 
 func (track *mp4track) writeAudioSample(data []byte, pts, dts uint64) (err error) {
@@ -627,7 +658,7 @@ func (track *mp4track) writeOPUS(opus []byte, pts, dts uint64) error {
         context := codec.OpusContext{ChannelCount: int(channels), SampleRate: 48000}
         extraData = context.WriteOpusExtraData()
     }
-    config, err := opusSpecificBoxFromHead(extraData)
+    config, _, err := opusSpecificBoxFromHead(extraData)
     if err != nil {
         return err
     }

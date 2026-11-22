@@ -342,9 +342,9 @@ func makeStsd(track *mp4track, handler_type HandlerType) []byte {
     } else if track.cid == MP4_CODEC_AAC || track.cid == MP4_CODEC_MP2 || track.cid == MP4_CODEC_MP3 {
         avbox = makeEsdsBox(track.trackId, track.cid, extraData)
     } else if track.cid == MP4_CODEC_OPUS {
-        if config, err := opusSpecificBoxFromHead(extraData); err == nil {
+        if config, family, err := opusSpecificBoxFromHead(extraData); err == nil {
             opusConfig = config
-            _, avbox = opusConfig.Encode()
+            _, avbox = opusConfig.EncodeWithChannelMappingFamily(family)
         }
     }
 
