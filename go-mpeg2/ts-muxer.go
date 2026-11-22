@@ -24,6 +24,7 @@ type table_pmt struct {
     pid            uint16
     cc             uint8
     pcr_pid        uint16
+    pcrOnVideo     bool
     version_number uint8
     pm             uint16
     streams        []*pes_stream
@@ -110,8 +111,10 @@ func (mux *TSMuxer) Write(pid uint16, data []byte, pts uint64, dts uint64) error
         return errors.New("not Found pid stream")
     }
     oldPCRPID := whichpmt.pcr_pid
-    if whichpmt.pcr_pid == 0 || (findPESIDByStreamType(whichstream.streamtype) == PES_STREAM_VIDEO && whichpmt.pcr_pid != pid) {
+    isVideo := findPESIDByStreamType(whichstream.streamtype) == PES_STREAM_VIDEO
+    if oldPCRPID == 0 || (isVideo && !whichpmt.pcrOnVideo) {
         whichpmt.pcr_pid = pid
+        whichpmt.pcrOnVideo = isVideo
     }
     pcrPIDChanged := oldPCRPID != 0 && whichpmt.pcr_pid != oldPCRPID
     if pcrPIDChanged {
@@ -251,17 +254,7 @@ func (mux *TSMuxer) writePES(pes *pes_stream, pmt *table_pmt, data []byte, pts u
             }
             tshdr.Adaptation_field_control = tshdr.Adaptation_field_control | 0x20
             adaptation.PCR_flag = 1
-            var pcr_base uint64 = 0
-            var pcr_ext uint16 = 0
-            if dts == 0 {
-                pcr_base = pts * 300 / 300
-                pcr_ext = uint16(pts * 300 % 300)
-            } else {
-                pcr_base = dts * 300 / 300
-                pcr_ext = uint16(dts * 300 % 300)
-            }
-            adaptation.Program_clock_reference_base = pcr_base
-            adaptation.Program_clock_reference_extension = pcr_ext
+            adaptation.Program_clock_reference_base = dts
             headlen += 6
         }
 

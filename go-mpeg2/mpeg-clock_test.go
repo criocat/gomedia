@@ -81,3 +81,66 @@ func TestTSMuxerPublishesPCRPIDBeforeSwitchingClock(t *testing.T) {
 		t.Errorf("PMT versions = %v, want %v", versions, want)
 	}
 }
+
+const clockTestH264 = "\x00\x00\x00\x01\x09\x10\x00\x00\x01\x65\x88\x84\x21\xa0"
+
+func TestTSMuxerPCRUsesZeroDTS(t *testing.T) {
+	muxer := NewTSMuxer()
+	pid := muxer.AddStream(TS_STREAM_H264)
+	var clocks []uint64
+	muxer.OnPacket = func(data []byte) {
+		var packet TSPacket
+		if err := packet.DecodeHeader(codec.NewBitStream(data)); err != nil {
+			t.Fatal(err)
+		}
+		if packet.Field != nil && packet.Field.PCR_flag != 0 {
+			clocks = append(clocks, packet.Field.Program_clock_reference_base)
+		}
+	}
+	for _, timestamp := range [][2]uint64{{80, 0}, {200, 40}, {120, 80}} {
+		if err := muxer.Write(pid, []byte(clockTestH264), timestamp[0], timestamp[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := []uint64{0, 3600, 7200}; !reflect.DeepEqual(clocks, want) {
+		t.Errorf("PCR bases = %v, want %v", clocks, want)
+	}
+}
+
+func TestTSMuxerKeepsPCRPIDAmongVideoTracks(t *testing.T) {
+	muxer := NewTSMuxer()
+	first, second := muxer.AddStream(TS_STREAM_H264), muxer.AddStream(TS_STREAM_H264)
+	pmtPID := muxer.pat.pmts[0].pid
+	var tables, clocks []uint16
+	muxer.OnPacket = func(data []byte) {
+		var packet TSPacket
+		bits := codec.NewBitStream(data)
+		if err := packet.DecodeHeader(bits); err != nil {
+			t.Fatal(err)
+		}
+		if packet.PID == pmtPID {
+			bits.SkipBits(8) // The muxer writes a zero PSI pointer.
+			pmt := NewPmt()
+			if err := pmt.Decode(bits); err != nil {
+				t.Fatal(err)
+			}
+			tables = append(tables, pmt.PCR_PID)
+		}
+		if packet.Field != nil && packet.Field.PCR_flag != 0 {
+			clocks = append(clocks, packet.PID)
+		}
+	}
+	for _, dts := range []uint64{0, 40, 80} {
+		for _, pid := range []uint16{first, second} {
+			if err := muxer.Write(pid, []byte(clockTestH264), dts, dts); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if want := []uint16{first}; !reflect.DeepEqual(tables, want) {
+		t.Errorf("PMT PCR PIDs = %v, want %v", tables, want)
+	}
+	if want := []uint16{first, first, first}; !reflect.DeepEqual(clocks, want) {
+		t.Errorf("PCR packet PIDs = %v, want %v", clocks, want)
+	}
+}
