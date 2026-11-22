@@ -318,7 +318,7 @@ func (track *mp4track) writeSample(sample []byte, pts, dts uint64) (err error) {
     case MP4_CODEC_AAC:
         err = track.writeAAC(sample, pts, dts)
     case MP4_CODEC_G711A, MP4_CODEC_G711U:
-        err = track.writeG711(sample, pts, dts)
+        err = track.writeAudioSample(sample, pts, dts)
     case MP4_CODEC_MP2, MP4_CODEC_MP3:
         err = track.writeMP3(sample, pts, dts)
     case MP4_CODEC_OPUS:
@@ -512,58 +512,59 @@ func (track *mp4track) writeH265(h265 []byte, pts, dts uint64) (err error) {
     return
 }
 
-func (track *mp4track) writeAAC(aacframes []byte, pts, dts uint64) (err error) {
+func (track *mp4track) writeAAC(aacframes []byte, pts, dts uint64) error {
     aacextra, ok := track.extra.(*aacExtraData)
     if !ok {
         return errors.New("must init aacExtraData first")
     }
-    if aacextra.asc == nil || len(aacextra.asc) <= 0 {
-        asc, err := codec.ConvertADTSToASC(aacframes)
-        if err != nil {
+    var elapsedSamples, sampleRate uint64
+    for len(aacframes) > 0 {
+        if len(aacframes) < 7 || codec.FindSyncword(aacframes[:2], 0) != 0 {
+            return errors.New("invalid AAC ADTS header")
+        }
+        var header codec.ADTS_Frame_Header
+        header.Decode(aacframes)
+        frameSize := int(header.Variable_Header.Frame_length)
+        headerSize := 7
+        if header.Fix_Header.Protection_absent == 0 {
+            headerSize = 9
+        }
+        if frameSize <= headerSize || frameSize > len(aacframes) {
+            return errors.New("invalid AAC ADTS frame size")
+        }
+        rateIndex := int(header.Fix_Header.Sampling_frequency_index)
+        if rateIndex >= len(codec.AAC_Sampling_Idx) {
+            return errors.New("invalid AAC ADTS sampling frequency")
+        }
+        rate := uint64(codec.AACSampleIdxToSample(rateIndex))
+        if sampleRate != 0 && rate != sampleRate {
+            return errors.New("AAC sampling frequency changed within a batch")
+        }
+        sampleRate = rate
+        offset := elapsedSamples * uint64(track.timescale) / sampleRate
+        if err := track.writeAudioSample(aacframes[headerSize:frameSize], pts+offset, dts+offset); err != nil {
             return err
         }
-        aacextra.asc = asc.Encode()
-
-        if track.chanelCount == 0 {
-            track.chanelCount = asc.Channel_configuration
+        if len(aacextra.asc) == 0 {
+            asc, _ := codec.ConvertADTSToASC(aacframes[:headerSize])
+            aacextra.asc = asc.Encode()
+            if track.chanelCount == 0 {
+                track.chanelCount = asc.Channel_configuration
+            }
+            if track.sampleRate == 0 {
+                track.sampleRate = uint32(sampleRate)
+            }
+            if track.sampleBits == 0 {
+                track.sampleBits = 16
+            }
         }
-        if track.sampleRate == 0 {
-            track.sampleRate = uint32(codec.AACSampleIdxToSample(int(asc.Sample_freq_index)))
-        }
-        if track.sampleBits == 0 {
-            // aac has no fixed bit depth, so we just set it to the default of 16
-            // see AudioSampleEntry (stsd-box) and https://superuser.com/a/1173507
-            track.sampleBits = 16
-        }
+        elapsedSamples += (uint64(header.Variable_Header.Number_of_raw_data_blocks_in_frame) + 1) * 1024
+        aacframes = aacframes[frameSize:]
     }
-
-    var currentOffset int64
-    if currentOffset, err = track.writer.Seek(0, io.SeekCurrent); err != nil {
-        return
-    }
-    //某些情况下，aacframes 可能由多个aac帧组成需要分帧，否则quicktime 貌似播放有问题
-    codec.SplitAACFrame(aacframes, func(aac []byte) {
-        entry := sampleEntry{
-            pts:                    pts,
-            dts:                    dts,
-            size:                   0,
-            SampleDescriptionIndex: 1,
-            offset:                 uint64(currentOffset),
-        }
-        n := 0
-        n, err = track.writer.Write(aac[7:])
-        if err != nil {
-            return
-        }
-        currentOffset += int64(n)
-        entry.size = uint64(n)
-        track.addSampleEntry(entry)
-    })
-
-    return
+    return nil
 }
 
-func (track *mp4track) writeG711(g711 []byte, pts, dts uint64) (err error) {
+func (track *mp4track) writeAudioSample(data []byte, pts, dts uint64) (err error) {
     var currentOffset int64
     if currentOffset, err = track.writer.Seek(0, io.SeekCurrent); err != nil {
         return
@@ -576,11 +577,11 @@ func (track *mp4track) writeG711(g711 []byte, pts, dts uint64) (err error) {
         offset:                 uint64(currentOffset),
     }
     n := 0
-    n, err = track.writer.Write(g711)
+    n, err = track.writer.Write(data)
     if err != nil {
         return err
     }
-    if n != len(g711) {
+    if n != len(data) {
         return io.ErrShortWrite
     }
     entry.size = uint64(n)
@@ -601,7 +602,7 @@ func (track *mp4track) writeMP3(mp3 []byte, pts, dts uint64) (err error) {
             track.cid = MP4_CODEC_MP3
         }
     }
-    return track.writeG711(mp3, pts, dts)
+    return track.writeAudioSample(mp3, pts, dts)
 }
 
 func (track *mp4track) writeOPUS(opus []byte, pts, dts uint64) error {
@@ -609,7 +610,7 @@ func (track *mp4track) writeOPUS(opus []byte, pts, dts uint64) error {
         return errors.New("empty Opus packet")
     }
     if len(track.samplelist) > 0 {
-        return track.writeG711(opus, pts, dts)
+        return track.writeAudioSample(opus, pts, dts)
     }
     extraData := track.extraData
     if len(extraData) == 0 {
@@ -627,7 +628,7 @@ func (track *mp4track) writeOPUS(opus []byte, pts, dts uint64) error {
     if err != nil {
         return err
     }
-    if err := track.writeG711(opus, pts, dts); err != nil {
+    if err := track.writeAudioSample(opus, pts, dts); err != nil {
         return err
     }
     track.extraData = extraData
