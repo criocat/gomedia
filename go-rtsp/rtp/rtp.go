@@ -1,6 +1,7 @@
 package rtp
 
 import (
+    "bytes"
     "encoding/binary"
     "errors"
 )
@@ -51,6 +52,17 @@ func (unpack *CommUnPacker) OnFrame(onframe ON_FRAME_FUNC) {
 
 func (unpack *CommUnPacker) HookRtp(cb RTP_HOOK_FUNC) {
     unpack.onRtp = cb
+}
+
+// An Annex B assembly buffer retains its start code between NAL units.
+func (unpack *CommUnPacker) finishIncompleteNAL(buffer *bytes.Buffer, timestamp uint32) {
+    if buffer.Len() <= 4 {
+        return
+    }
+    if unpack.onFrame != nil {
+        unpack.onFrame(buffer.Bytes(), timestamp, true)
+    }
+    buffer.Truncate(4)
 }
 
 type RtpPacket struct {

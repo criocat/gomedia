@@ -170,7 +170,8 @@ func (unpacker *H265UnPacker) unpackPayload(pkg *RtpPacket) error {
 
     packType := (pkg.Payload[0] >> 1 & 0x3f)
     switch {
-    case 0 < packType && packType < 40:
+    case packType <= 40:
+        unpacker.finishIncompleteNAL(unpacker.frameBuffer, unpacker.timestamp)
         unpacker.frameBuffer.Write(pkg.Payload)
         if unpacker.onFrame != nil {
             unpacker.onFrame(unpacker.frameBuffer.Bytes(), pkg.Header.Timestamp, false)
@@ -191,12 +192,7 @@ func (unpacker *H265UnPacker) unpackFu(pkt *RtpPacket) error {
     s := pkt.Payload[2] & 0x80
     e := pkt.Payload[2] & 0x40
     if s > 0 {
-        if unpacker.frameBuffer.Len() > 4 {
-            if unpacker.onFrame != nil {
-                unpacker.onFrame(unpacker.frameBuffer.Bytes(), unpacker.timestamp, true)
-            }
-            unpacker.frameBuffer.Truncate(4)
-        }
+        unpacker.finishIncompleteNAL(unpacker.frameBuffer, unpacker.timestamp)
         unpacker.timestamp = pkt.Header.Timestamp
         unpacker.frameBuffer.WriteByte(pkt.Payload[0]&0x81 | ((pkt.Payload[2] & 0x3F) << 1))
         unpacker.frameBuffer.WriteByte(pkt.Payload[1])

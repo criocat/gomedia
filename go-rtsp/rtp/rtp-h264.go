@@ -249,12 +249,14 @@ func (unpacker *H264UnPacker) UnPack(pkt []byte) error {
     packType := pkg.Payload[0] & 0x1f
     switch {
     case 0 < packType && packType < 24:
+        unpacker.finishIncompleteNAL(unpacker.frameBuffer, unpacker.timestamp)
         unpacker.frameBuffer.Write(pkg.Payload)
         if unpacker.onFrame != nil {
             unpacker.onFrame(unpacker.frameBuffer.Bytes(), pkg.Header.Timestamp, false)
         }
         unpacker.frameBuffer.Truncate(4)
     case packType == 24:
+        unpacker.finishIncompleteNAL(unpacker.frameBuffer, unpacker.timestamp)
         return unpacker.unpackStapa(pkg)
     case packType == 25:
         fallthrough
@@ -276,12 +278,7 @@ func (unpacker *H264UnPacker) unpackFuA(pkt *RtpPacket) error {
     s := pkt.Payload[1] & 0x80
     e := pkt.Payload[1] & 0x40
     if s > 0 {
-        if unpacker.frameBuffer.Len() > 4 {
-            if unpacker.onFrame != nil {
-                unpacker.onFrame(unpacker.frameBuffer.Bytes(), unpacker.timestamp, true)
-            }
-            unpacker.frameBuffer.Truncate(4)
-        }
+        unpacker.finishIncompleteNAL(unpacker.frameBuffer, unpacker.timestamp)
         unpacker.timestamp = pkt.Header.Timestamp
         unpacker.frameBuffer.WriteByte((pkt.Payload[0] & 0xE0) | (pkt.Payload[1] & 0x1F))
         unpacker.lost = false
