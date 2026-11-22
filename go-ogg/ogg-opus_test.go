@@ -1,12 +1,56 @@
 package ogg
 
 import (
+	"encoding/binary"
 	"os"
 	"reflect"
 	"testing"
 
 	"github.com/yapingcat/gomedia/go-codec"
 )
+
+func TestOpusAudioParametersUseGranuleClock(t *testing.T) {
+	head := []byte{'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 1, 0x38, 0x01, 0xc0, 0x5d, 0, 0, 0, 0, 0}
+	page := makeOggTestPage(2, 0, 0, []byte{byte(len(head))}, head)
+	demuxer := NewDemuxer()
+	if err := demuxer.Input(page); err != nil {
+		t.Fatal(err)
+	}
+	parameters := demuxer.GetAudioParam()
+	if parameters == nil || parameters.SampleRate != 48000 {
+		t.Fatalf("Opus parameters = %+v, want 48 kHz", parameters)
+	}
+	if got := binary.LittleEndian.Uint32(parameters.ExtraData[12:]); got != 24000 {
+		t.Errorf("original sample rate in OpusHead = %d, want 24000", got)
+	}
+}
+
+func TestDemuxerRejectsBadPageChecksumBeforeCallbacks(t *testing.T) {
+	head := []byte{'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 1, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0, 0}
+	page := makeOggTestPage(2, 0, 0, []byte{byte(len(head))}, head)
+	damaged := append([]byte(nil), page...)
+	damaged[22] ^= 1
+
+	demuxer := NewDemuxer()
+	var pages, packets int
+	demuxer.OnPage = func(*oggPage) { pages++ }
+	demuxer.OnPacket = func(uint32, uint64, []byte, int) { packets++ }
+	if err := demuxer.Input(damaged[:30]); err != nil {
+		t.Fatal(err)
+	}
+	if err := demuxer.Input(damaged[30:]); err == nil {
+		t.Fatal("accepted a page with a bad checksum")
+	}
+	if pages != 0 || packets != 0 || demuxer.GetAudioParam() != nil {
+		t.Fatalf("damaged page reached callbacks: %d pages, %d packets, parameters %+v", pages, packets, demuxer.GetAudioParam())
+	}
+	if err := demuxer.Input(page); err != nil {
+		t.Fatalf("retry with a complete valid page: %v", err)
+	}
+	if pages != 1 || packets != 1 {
+		t.Errorf("valid page reached callbacks %d and %d times, want one each", pages, packets)
+	}
+}
 
 func TestDemuxerReadsOpusStream(t *testing.T) {
 	data, err := os.ReadFile("testdata/opus-short.ogg")

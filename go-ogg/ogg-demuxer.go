@@ -32,7 +32,7 @@ type AudioParam struct {
 }
 
 type Demuxer struct {
-    currentStream *oggStream
+    currentPage   *oggPage
     streams       map[uint32]*oggStream
     headCache     []byte
     OnPage        func(page *oggPage)
@@ -83,12 +83,39 @@ func (demuxer *Demuxer) Input(buf []byte) (err error) {
                 hdr = demuxer.headCache
                 hdr = append(hdr, buf[:headLen-len(demuxer.headCache)]...)
             } else {
-                hdr = buf
+                hdr = buf[:headLen]
             }
             page, err := readPage(hdr)
             if err != nil {
                 return err
             }
+            var zeroChecksum [4]byte
+            page.headerChecksum = makeChecksum(0, hdr[:22])
+            page.headerChecksum = makeChecksum(page.headerChecksum, zeroChecksum[:])
+            page.headerChecksum = makeChecksum(page.headerChecksum, hdr[26:])
+            demuxer.currentPage = page
+            demuxer.state = DEMUX_PAGE_PAYLOAD
+            buf = buf[headLen-len(demuxer.headCache):]
+            demuxer.headCache = demuxer.headCache[:0]
+        case DEMUX_PAGE_PAYLOAD:
+            page := demuxer.currentPage
+            needLen := int(page.payloadLen) - len(page.cache)
+            if needLen > len(buf) {
+                page.cache = append(page.cache, buf...)
+                return nil
+            }
+
+            payload := buf[:needLen]
+            buf = buf[needLen:]
+            if len(page.cache) > 0 {
+                payload = append(page.cache, payload...)
+            }
+            demuxer.currentPage = nil
+            demuxer.state = DEMUX_PAGE_HEAD
+            if makeChecksum(page.headerChecksum, payload) != page.checkSum {
+                return errors.New("ogg page checksum mismatch")
+            }
+            page.cache = nil
             if demuxer.OnPage != nil {
                 demuxer.OnPage(page)
             }
@@ -118,30 +145,6 @@ func (demuxer *Demuxer) Input(buf []byte) (err error) {
                 demuxer.streams[page.streamId] = stream
             }
             stream.currentPage = page
-            demuxer.currentStream = stream
-            demuxer.state = DEMUX_PAGE_PAYLOAD
-            buf = buf[headLen-len(demuxer.headCache):]
-            if len(demuxer.headCache) > 0 {
-                demuxer.headCache = demuxer.headCache[:0]
-            }
-        case DEMUX_PAGE_PAYLOAD:
-            stream := demuxer.currentStream
-            page := stream.currentPage
-            needLen := int(page.payloadLen) - len(page.cache)
-            if needLen > len(buf) {
-                page.cache = append(page.cache, buf...)
-                return nil
-            }
-
-            var tmp []byte
-            if len(page.cache) > 0 {
-                page.cache = append(page.cache, buf[0:needLen]...)
-                buf = buf[needLen:]
-                tmp = page.cache
-            } else {
-                tmp = buf[0:page.payloadLen]
-                buf = buf[page.payloadLen:]
-            }
 
             idx := 0
             if page.isContinuePacket {
@@ -158,7 +161,7 @@ func (demuxer *Demuxer) Input(buf []byte) (err error) {
                     }
                 }
                 if len(stream.cache) > 0 && stream.lost == 0 {
-                    stream.cache = append(stream.cache, tmp[:continuationLen]...)
+                    stream.cache = append(stream.cache, payload[:continuationLen]...)
                     if complete {
                         if demuxer.OnPacket != nil {
                             demuxer.OnPacket(stream.streamId, page.granulePos, stream.cache, 0)
@@ -167,7 +170,7 @@ func (demuxer *Demuxer) Input(buf []byte) (err error) {
                         stream.cache = stream.cache[:0]
                     }
                 }
-                tmp = tmp[continuationLen:]
+                payload = payload[continuationLen:]
             } else {
                 stream.cache = stream.cache[:0]
             }
@@ -177,7 +180,7 @@ func (demuxer *Demuxer) Input(buf []byte) (err error) {
             for ; idx < int(page.segmentsCount); idx++ {
                 packetLen += int(page.seqmentTable[idx])
                 if page.seqmentTable[idx] < 255 {
-                    packet := tmp[start : start+packetLen]
+                    packet := payload[start : start+packetLen]
                     if demuxer.OnPacket != nil {
                         demuxer.OnPacket(stream.streamId, stream.currentPage.granulePos, packet, 0)
                     }
@@ -194,11 +197,8 @@ func (demuxer *Demuxer) Input(buf []byte) (err error) {
             }
 
             if packetLen > 0 {
-                stream.cache = append(stream.cache, tmp[start:]...)
+                stream.cache = append(stream.cache, payload[start:]...)
             }
-            page.cache = page.cache[:0]
-            demuxer.state = DEMUX_PAGE_HEAD
-
         default:
             panic("unknow state")
         }
@@ -245,7 +245,7 @@ func (demuxer *Demuxer) readPacket(stream *oggStream, packet []byte) error {
                 opus, _ := stream.parser.(*opusDemuxer)
                 demuxer.aparam = &AudioParam{
                     CodecId:        codec.CODECID_AUDIO_OPUS,
-                    SampleRate:     uint32(opus.ctx.SampleRate),
+                    SampleRate:     48000, // The Ogg Opus granule clock.
                     ChannelCount:   uint32(opus.ctx.ChannelCount),
                     InitialPadding: uint32(opus.ctx.Preskip),
                     ExtraData:      opus.extradata,

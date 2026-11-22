@@ -75,11 +75,10 @@ var crc_table [256]uint32 = [256]uint32{
 }
 
 func makeChecksum(crc uint32, buffer []byte) uint32 {
-    var checksum uint32
     for index := range buffer {
-        checksum = (checksum << 8) ^ crc_table[byte(checksum>>24)^buffer[index]]
+        crc = (crc << 8) ^ crc_table[byte(crc>>24)^buffer[index]]
     }
-    return checksum
+    return crc
 }
 
 type oggPage struct {
@@ -91,6 +90,7 @@ type oggPage struct {
     streamId         uint32
     pageSeq          uint32
     checkSum         uint32
+    headerChecksum   uint32
     segmentsCount    uint8
     seqmentTable     [255]byte
     payloadLen       uint16
