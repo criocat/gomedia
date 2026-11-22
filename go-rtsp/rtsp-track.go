@@ -277,7 +277,9 @@ func (track *RtspTrack) createUnpacker() rtp.UnPacker {
         return rtp.NewH265UnPacker()
     case RTSP_CODEC_AAC:
         if aacFmtp, ok := track.paramHandler.(*sdp.AACFmtpParam); ok {
-            return rtp.NewAACUnPacker(aacFmtp.SizeLength(), aacFmtp.IndexLength(), aacFmtp.AudioSpecificConfig())
+            unpacker := rtp.NewAACUnPacker(aacFmtp.SizeLength(), aacFmtp.IndexLength(), aacFmtp.AudioSpecificConfig())
+            unpacker.SetAccessUnitTiming(aacFmtp.IndexDeltaLength(), aacFmtp.ConstantDuration())
+            return unpacker
         } else {
             return rtp.NewAACUnPacker(13, 3, nil)
         }

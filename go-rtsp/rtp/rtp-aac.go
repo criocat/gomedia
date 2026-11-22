@@ -88,19 +88,34 @@ func (packer *AACPacker) Pack(data []byte, timestamp uint32) error {
 
 type AACUnPacker struct {
     CommUnPacker
-    sizeLenth   int
-    indexLength int
-    asc         []byte
+    sizeLength       int
+    indexLength      int
+    indexDeltaLength int
+    duration         uint32
+    constantDuration uint32
+    asc              []byte
 }
 
 func NewAACUnPacker(sizeLength int, indexLength int, asc []byte) *AACUnPacker {
     unpacker := &AACUnPacker{
-        sizeLenth:   sizeLength,
-        indexLength: indexLength,
-        asc:         make([]byte, len(asc)),
+        sizeLength:       sizeLength,
+        indexLength:      indexLength,
+        indexDeltaLength: indexLength,
+        duration:         1024,
+        asc:              append([]byte(nil), asc...),
     }
-    copy(unpacker.asc, asc)
+    var config codec.AudioSpecificConfiguration
+    if config.Decode(asc) == nil && config.Audio_object_type >= 1 && config.Audio_object_type <= 4 && config.GA_framelength_flag != 0 {
+        unpacker.duration = 960
+    }
     return unpacker
+}
+
+// SetAccessUnitTiming applies the negotiated AU index width and duration in RTP ticks.
+// A zero duration uses the duration inferred from AudioSpecificConfig.
+func (unpacker *AACUnPacker) SetAccessUnitTiming(indexDeltaLength int, duration uint32) {
+    unpacker.indexDeltaLength = indexDeltaLength
+    unpacker.constantDuration = duration
 }
 
 func (unpacker *AACUnPacker) UnPack(pkt []byte) error {
@@ -108,35 +123,62 @@ func (unpacker *AACUnPacker) UnPack(pkt []byte) error {
     if err := pkg.Decode(pkt); err != nil {
         return err
     }
-    if len(pkg.Payload) < 4 {
-        return errors.New("aac rtp pakcet less than 4 byte")
+    if len(pkg.Payload) < 2 {
+        return errors.New("missing AAC AU-headers-length")
     }
 
     if unpacker.onRtp != nil {
         unpacker.onRtp(pkg)
     }
 
-    headLength := (binary.BigEndian.Uint16(pkg.Payload) + 7) / 8
-    auNum := headLength / 2
-    pkg.Payload = pkg.Payload[2:]
-    tmp := make([]int, auNum)
-    for i := 0; i < int(auNum); i++ {
-        bs := codec.NewBitStream(pkg.Payload)
-        tmp[i] = int(bs.Uint16(unpacker.sizeLenth))
-        pkg.Payload = pkg.Payload[2:]
+    if unpacker.sizeLength <= 0 || unpacker.sizeLength > 32 || unpacker.indexLength < 0 || unpacker.indexLength > 32 ||
+        unpacker.indexDeltaLength < 0 || unpacker.indexDeltaLength > 32 {
+        return errors.New("unsupported AAC AU-header field widths")
     }
-
-    for i := 0; i < len(tmp); i++ {
+    headerBits := int(binary.BigEndian.Uint16(pkg.Payload))
+    headerBytes := (headerBits + 7) / 8
+    firstBits := unpacker.sizeLength + unpacker.indexLength
+    nextBits := unpacker.sizeLength + unpacker.indexDeltaLength
+    if headerBytes > len(pkg.Payload)-2 || headerBits < firstBits || (headerBits-firstBits)%nextBits != 0 {
+        return errors.New("invalid AAC AU headers")
+    }
+    headers := codec.NewBitStream(pkg.Payload[2 : 2+headerBytes])
+    payload := pkg.Payload[2+headerBytes:]
+    count := 1 + (headerBits-firstBits)/nextBits
+    timestamp := pkg.Header.Timestamp
+    duration := unpacker.constantDuration
+    if duration == 0 {
+        duration = unpacker.duration
+    }
+    for i := 0; i < count; i++ {
+        size := headers.GetBits(unpacker.sizeLength)
+        if i == 0 {
+            headers.SkipBits(unpacker.indexLength)
+        } else {
+            step := uint32(1)
+            if unpacker.indexDeltaLength > 0 {
+                step += uint32(headers.GetBits(unpacker.indexDeltaLength))
+            }
+            timestamp += step * duration
+        }
+        if size == 0 || size > uint64(len(payload)) {
+            return errors.New("incomplete AAC access unit")
+        }
         var adts []byte
         if len(unpacker.asc) > 0 {
-            adtsHdr, _ := codec.ConvertASCToADTS(unpacker.asc, tmp[i]+7)
+            if size > 8191-7 {
+                return errors.New("AAC access unit too large for ADTS")
+            }
+            adtsHdr, err := codec.ConvertASCToADTS(unpacker.asc, int(size)+7)
+            if err != nil {
+                return err
+            }
             adts = adtsHdr.Encode()
         }
-        adts = append(adts, pkg.Payload[:tmp[i]]...)
         if unpacker.onFrame != nil {
-            unpacker.onFrame(adts, pkg.Header.Timestamp, false)
+            unpacker.onFrame(append(adts, payload[:size]...), timestamp, false)
         }
-        pkg.Payload = pkg.Payload[tmp[i]:]
+        payload = payload[size:]
     }
     return nil
 }

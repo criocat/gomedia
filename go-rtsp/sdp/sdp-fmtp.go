@@ -230,6 +230,7 @@ type AACFmtpParam struct {
     sizeLength       int
     indexLength      int
     indexDeltaLength int
+    constantDuration uint32
 }
 
 type AACFmtpParamOption func(extra *AACFmtpParam)
@@ -269,6 +270,10 @@ func (param *AACFmtpParam) IndexDeltaLength() int {
     return param.indexDeltaLength
 }
 
+func (param *AACFmtpParam) ConstantDuration() uint32 {
+    return param.constantDuration
+}
+
 func (param *AACFmtpParam) AudioSpecificConfig() []byte {
     return param.asc
 }
@@ -285,19 +290,23 @@ func (param *AACFmtpParam) Load(fmtp string) {
         if len(kv) < 2 {
             continue
         }
-        switch kv[0] {
+        switch strings.ToLower(kv[0]) {
         case "profile-level-id":
             param.profileLevelId, _ = strconv.Atoi(kv[1])
         case "mode":
             param.mode = kv[1]
         case "config":
             param.asc, _ = hex.DecodeString(kv[1])
-        case "sizeLength":
+        case "sizelength":
             param.sizeLength, _ = strconv.Atoi(kv[1])
-        case "indexLength":
+        case "indexlength":
             param.indexLength, _ = strconv.Atoi(kv[1])
-        case "indexDeltaLength":
+        case "indexdeltalength":
             param.indexDeltaLength, _ = strconv.Atoi(kv[1])
+        case "constantduration":
+            if value, err := strconv.ParseUint(kv[1], 10, 32); err == nil {
+                param.constantDuration = uint32(value)
+            }
         }
     }
 
@@ -307,6 +316,10 @@ func (param *AACFmtpParam) Save() string {
 
     paramstr := fmt.Sprintf("streamtype=5;mode=%s;sizeLength=%d;indexLength=%d;indexDeltaLength=%d",
         param.mode, param.sizeLength, param.indexLength, param.indexDeltaLength)
+
+    if param.constantDuration != 0 {
+        paramstr += ";constantDuration=" + strconv.FormatUint(uint64(param.constantDuration), 10)
+    }
 
     if param.profileLevelId > 0 {
         paramstr += ";profile-level-id=" + strconv.Itoa(param.profileLevelId)
