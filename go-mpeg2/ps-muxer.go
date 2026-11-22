@@ -63,11 +63,13 @@ func (muxer *PSMuxer) Write(sid uint8, frame []byte, pts uint64, dts uint64) err
     var vcl bool = false
     if stream.Stream_type == uint8(PS_STREAM_H264) || stream.Stream_type == uint8(PS_STREAM_H265) {
         codec.SplitFrame(frame, func(nalu []byte) bool {
+            if len(nalu) == 0 {
+                return true
+            }
             if stream.Stream_type == uint8(PS_STREAM_H264) {
                 nalu_type := codec.H264NaluTypeWithoutStartCode(nalu)
                 if nalu_type == codec.H264_NAL_AUD {
                     withaud = true
-                    return false
                 } else if codec.IsH264VCLNaluType(nalu_type) {
                     if nalu_type == codec.H264_NAL_I_SLICE {
                         idr_flag = true
@@ -80,7 +82,6 @@ func (muxer *PSMuxer) Write(sid uint8, frame []byte, pts uint64, dts uint64) err
                 nalu_type := codec.H265NaluTypeWithoutStartCode(nalu)
                 if nalu_type == codec.H265_NAL_AUD {
                     withaud = true
-                    return false
                 } else if codec.IsH265VCLNaluType(nalu_type) {
                     if nalu_type >= codec.H265_NAL_SLICE_BLA_W_LP && nalu_type <= codec.H265_NAL_SLICE_CRA {
                         idr_flag = true

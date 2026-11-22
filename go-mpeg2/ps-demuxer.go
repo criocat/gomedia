@@ -173,8 +173,10 @@ func (psdemuxer *PSDemuxer) Flush() {
         if len(stream.streamBuf) == 0 {
             continue
         }
+        frame := stream.streamBuf
+        stream.streamBuf = nil
         if psdemuxer.OnFrame != nil {
-            psdemuxer.OnFrame(stream.streamBuf, stream.cid, stream.pts/90, stream.dts/90)
+            psdemuxer.OnFrame(frame, stream.cid, stream.pts/90, stream.dts/90)
         }
     }
 }
