@@ -211,45 +211,62 @@ func NewAACMuxer() *AACMuxer {
 
 func (muxer *AACMuxer) Write(frames []byte, pts uint32, dts uint32) [][]byte {
     var tags [][]byte
-    _ = muxer.write(frames, dts, func(tag []byte, _ uint32) error {
+    _ = muxer.WriteTags(frames, dts, func(tag []byte, _ uint32) error {
         tags = append(tags, tag)
         return nil
     })
     return tags
 }
 
-func (muxer *AACMuxer) write(frames []byte, dts uint32, output func([]byte, uint32) error) error {
+// WriteTags emits AAC tags with their DTS in milliseconds. A new audio
+// configuration is saved only after output accepts its sequence header.
+func (muxer *AACMuxer) WriteTags(frames []byte, dts uint32, output func(tag []byte, dts uint32) error) error {
     // This clock is divisible by every ADTS sample rate, so changing sample
     // rates within a batch does not discard fractional milliseconds.
     const aacClock = 28224000
     var elapsedTicks uint64
-    var writeErr error
-    codec.SplitAACFrame(frames, func(aac []byte) {
-        if writeErr != nil {
-            return
+    for start := codec.FindSyncword(frames, 0); start >= 0; start = codec.FindSyncword(frames, 0) {
+        aac := frames[start:]
+        if len(aac) < 7 {
+            return errors.New("incomplete AAC ADTS header")
+        }
+        var header codec.ADTS_Frame_Header
+        header.Decode(aac)
+        frameSize := int(header.Variable_Header.Frame_length)
+        blocks := int(header.Variable_Header.Number_of_raw_data_blocks_in_frame) + 1
+        headerSize := 7
+        if header.Fix_Header.Protection_absent == 0 {
+            if blocks != 1 {
+                return errors.New("AAC ADTS CRC with multiple raw data blocks is unsupported")
+            }
+            headerSize += 2
+        }
+        if frameSize <= headerSize || frameSize > len(aac) {
+            return errors.New("invalid AAC ADTS frame size")
         }
         asc, err := codec.ConvertADTSToASC(aac)
         if err != nil {
-            return
+            return err
         }
         index := int(asc.Sample_freq_index)
         if index >= len(codec.AAC_Sampling_Idx) {
-            writeErr = errors.New("invalid AAC ADTS sampling frequency")
-            return
+            return errors.New("invalid AAC ADTS sampling frequency")
         }
         timestamp := dts + uint32(elapsedTicks/(aacClock/1000))
         if muxer.config != *asc {
-            writeErr = output(WriteAudioTag(asc.Encode(), FLV_AAC, 0, 0, true), timestamp)
-            if writeErr != nil {
-                return
+            if err := output(WriteAudioTag(asc.Encode(), FLV_AAC, 0, 0, true), timestamp); err != nil {
+                return err
             }
             muxer.config = *asc
         }
-        writeErr = output(WriteAudioTag(aac[7:], FLV_AAC, 0, 0, false), timestamp)
-        samples := (uint64(aac[6]&0x03) + 1) * 1024
+        if err := output(WriteAudioTag(aac[headerSize:frameSize], FLV_AAC, 0, 0, false), timestamp); err != nil {
+            return err
+        }
+        samples := uint64(blocks) * 1024
         elapsedTicks += samples * (aacClock / uint64(codec.AACSampleIdxToSample(index)))
-    })
-    return writeErr
+        frames = aac[frameSize:]
+    }
+    return nil
 }
 
 type G711AMuxer struct {
@@ -372,7 +389,7 @@ func (muxer *FlvMuxer) writeFrames(frameType TagType, frames []byte, pts uint32,
     var tags [][]byte
     if frameType == AUDIO_TAG {
         if aac, ok := muxer.audioMuxer.(*AACMuxer); ok {
-            return aac.write(frames, dts, writeTag)
+            return aac.WriteTags(frames, dts, writeTag)
         }
         tags = muxer.audioMuxer.Write(frames, pts, dts)
     } else if frameType == VIDEO_TAG {

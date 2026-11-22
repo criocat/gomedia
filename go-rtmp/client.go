@@ -246,16 +246,7 @@ func (cli *RtmpClient) WriteAudio(cid codec.CodecID, frame []byte, pts, dts uint
 		cli.audioChan = newChunkStreamWriter(CHUNK_CHANNEL_AUDIO)
 		cli.audioChan.chunkSize = cli.writeChunkSize
 	}
-	tags := cli.audioMuxer.Write(frame, pts, dts)
-	for _, tag := range tags {
-		pkt := cli.audioChan.writeData(tag, AUDIO, cli.streamId, dts)
-		if len(pkt) > 0 {
-			if err := cli.output(pkt); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return writeAudioMessages(cli.audioMuxer, cli.audioChan, cli.streamId, frame, pts, dts, cli.output)
 }
 
 func (cli *RtmpClient) WriteVideo(cid codec.CodecID, frame []byte, pts, dts uint32) error {

@@ -209,6 +209,26 @@ func (cs *chunkStreamWriter) writeData(data []byte, msgType MessageType, streamI
     return chks
 }
 
+func (cs *chunkStreamWriter) sendMessage(data []byte, msgType MessageType, streamID, timestamp uint32, output OutputCB) error {
+    if len(data) == 0 {
+        return nil
+    }
+    previous := *cs
+    var previousChunk chunkPacket
+    if previous.current != nil {
+        previousChunk = *previous.current
+    }
+    if err := output(cs.writeData(data, msgType, streamID, timestamp)); err != nil {
+        // Future compressed headers must refer to the last accepted message.
+        if previous.current != nil {
+            *previous.current = previousChunk
+        }
+        *cs = previous
+        return err
+    }
+    return nil
+}
+
 type chunkStream struct {
     firstChunkFmt        uint8
     hasExtendedTimestamp bool

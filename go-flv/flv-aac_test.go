@@ -13,6 +13,33 @@ import (
 // One stereo AAC-LC silence frame in ADTS at 44.1 kHz.
 var flvTestAACFrame = []byte{0xff, 0xf1, 0x50, 0x80, 0x01, 0xbf, 0xfc, 0x21, 0x10, 0x04, 0x60, 0x8c, 0x1c}
 
+func TestFlvAACStripsADTSCRC(t *testing.T) {
+	// First 44.1 kHz mono AAC-LC silence frame encoded by FDK-AAC
+	// with ADTS CRC protection enabled. The CRC bytes are e0 75.
+	frame := []byte{0xff, 0xf0, 0x50, 0x40, 0x17, 0x22, 0x44, 0xe0, 0x75, 0x01, 0x40, 0x22, 0x80, 0xa3, 0x7c, 0xd8, 0x85}
+	frame = append(frame, bytes.Repeat([]byte{0x2d}, 184-len(frame))...)
+	frame = append(frame, 0x2f)
+	var output bytes.Buffer
+	writer := CreateFlvWriter(&output)
+	if err := writer.WriteFlvHeader(); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteAAC(frame, 100, 100); err != nil {
+		t.Fatal(err)
+	}
+	reader := CreateFlvReader()
+	var payload []byte
+	reader.OnFrame = func(_ codec.CodecID, data []byte, _, _ uint32) {
+		payload = data[7:]
+	}
+	if err := reader.Input(output.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(payload, frame[9:]) {
+		t.Errorf("FLV AAC payload length = %d, want %d bytes without the ADTS CRC", len(payload), len(frame)-9)
+	}
+}
+
 func TestFlvWriterUpdatesAACConfigurationWhenSampleRateChanges(t *testing.T) {
 	frame44100 := flvTestAACFrame
 	frame48000 := append([]byte(nil), frame44100...)
