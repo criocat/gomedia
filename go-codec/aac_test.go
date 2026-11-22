@@ -27,3 +27,26 @@ func TestADTSFrameLengthEncoding(t *testing.T) {
 		})
 	}
 }
+
+func TestADTSBufferFullnessEncoding(t *testing.T) {
+	for _, tc := range []struct {
+		length   uint16
+		fullness uint16
+	}{
+		{length: 128, fullness: 0x7ff},
+		{length: 131, fullness: 0x2ad},
+		{length: 8191, fullness: 0x040},
+	} {
+		header := NewAdtsFrameHeader()
+		header.Variable_Header.Frame_length = tc.length
+		header.Variable_Header.Adts_buffer_fullness = tc.fullness
+		header.Variable_Header.Number_of_raw_data_blocks_in_frame = 2
+		var decoded ADTS_Frame_Header
+		decoded.Decode(header.Encode())
+		got := decoded.Variable_Header
+		if got.Frame_length != tc.length || got.Adts_buffer_fullness != tc.fullness || got.Number_of_raw_data_blocks_in_frame != 2 {
+			t.Errorf("decoded length=%d fullness=%#03x block field=%d, want %d/%#03x/2",
+				got.Frame_length, got.Adts_buffer_fullness, got.Number_of_raw_data_blocks_in_frame, tc.length, tc.fullness)
+		}
+	}
+}
