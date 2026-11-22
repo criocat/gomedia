@@ -556,6 +556,21 @@ func GetH265Resolution(sps []byte) (width uint32, height uint32) {
     h265sps.Decode(sps[start+int(sc):])
     width = uint32(h265sps.Pic_width_in_luma_samples)
     height = uint32(h265sps.Pic_height_in_luma_samples)
+    if h265sps.Conformance_window_flag == 1 {
+        cropUnitX, cropUnitY := uint64(1), uint64(1)
+        switch h265sps.Chroma_format_idc {
+        case 1: // 4:2:0
+            cropUnitX, cropUnitY = 2, 2
+        case 2: // 4:2:2
+            cropUnitX = 2
+        }
+        cropX := cropUnitX * (h265sps.Conf_win_left_offset + h265sps.Conf_win_right_offset)
+        cropY := cropUnitY * (h265sps.Conf_win_top_offset + h265sps.Conf_win_bottom_offset)
+        if cropX < uint64(width) && cropY < uint64(height) {
+            width -= uint32(cropX)
+            height -= uint32(cropY)
+        }
+    }
     return
 }
 

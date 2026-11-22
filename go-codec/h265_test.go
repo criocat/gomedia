@@ -2,10 +2,35 @@ package codec
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"reflect"
 	"testing"
 )
+
+func TestHEVCResolutionUsesConformanceWindow(t *testing.T) {
+	// x265 encoded these images as 160x120 before cropping. The expected
+	// visible dimensions come from ffprobe for each chroma format.
+	for _, tc := range []struct {
+		name, sps     string
+		width, height uint32
+	}{
+		{"4:2:0", "42010101600000030090000003000003001ea0142079d565959a4932bc05a02000000300200000030021", 158, 118},
+		{"4:2:2", "4201010408000003009d0800000300001eb0142079d4996566924caf0168080000030008000003000840", 158, 117},
+		{"4:4:4", "4201010408000003009e0800000300001e9002840f3924cb2b349265780b404000000300400000030042", 157, 117},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sps, err := hex.DecodeString("00000001" + tc.sps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			width, height := GetH265Resolution(sps)
+			if width != tc.width || height != tc.height {
+				t.Errorf("visible size = %dx%d, want %dx%d", width, height, tc.width, tc.height)
+			}
+		})
+	}
+}
 
 var vps []byte = []byte{0x00, 0x00, 0x00, 0x01, 0x40, 0x01, 0x0C, 0x01,
 	0xFF, 0xFF, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00,

@@ -144,30 +144,32 @@ func (demuxer *Demuxer) Input(buf []byte) (err error) {
             }
 
             idx := 0
-            if stream.lost > 0 && page.isContinuePacket {
-                removeLen := 0
-                for ; idx < int(page.segmentsCount); idx++ {
-                    if page.seqmentTable[idx] < 255 {
-                        removeLen += int(page.seqmentTable[idx])
-                    } else {
-                        tmp = tmp[removeLen:]
+            if page.isContinuePacket {
+                // Only the first packet on the page continues the previous one.
+                continuationLen := 0
+                complete := false
+                for idx < int(page.segmentsCount) {
+                    size := page.seqmentTable[idx]
+                    idx++
+                    continuationLen += int(size)
+                    if size < 255 {
+                        complete = true
                         break
                     }
                 }
-            } else if stream.lost == 0 && page.isContinuePacket {
-                appendLen := 0
-                for ; idx < int(page.segmentsCount); idx++ {
-                    appendLen += int(page.seqmentTable[idx])
-                    if page.seqmentTable[idx] < 255 {
-                        stream.cache = append(stream.cache, tmp[:appendLen]...)
+                if len(stream.cache) > 0 && stream.lost == 0 {
+                    stream.cache = append(stream.cache, tmp[:continuationLen]...)
+                    if complete {
                         if demuxer.OnPacket != nil {
-                            demuxer.OnPacket(stream.streamId, stream.currentPage.granulePos, stream.cache, 0)
+                            demuxer.OnPacket(stream.streamId, page.granulePos, stream.cache, 0)
                         }
                         page.packets = append(page.packets, stream.cache)
                         stream.cache = stream.cache[:0]
-                        tmp = tmp[appendLen:]
                     }
                 }
+                tmp = tmp[continuationLen:]
+            } else {
+                stream.cache = stream.cache[:0]
             }
 
             start := 0
