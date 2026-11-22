@@ -185,13 +185,13 @@ func (ctx *RtcpContext) getReportBlock() ReportBlock {
     }
 
     delay := time.Now().UnixNano()/1000 - int64(ctx.srClockTime)
-    lsr := ctx.srNtpLsr >> 8 & 0xFFFFFFFF
+    lsr := uint32(ctx.srNtpLsr >> 16)
     dlsr := uint32(float32(delay) / 1000000 * 65536)
 
     rb.Lost = lost
     rb.Fraction = uint8(fraction)
     rb.ExtendHighestSeq = extendMax
-    rb.Lsr = uint32(lsr)
+    rb.Lsr = lsr
     rb.Dlsr = dlsr
     rb.SSRC = ctx.senderSSRC
     rb.Jitter = uint32(ctx.jitter)
