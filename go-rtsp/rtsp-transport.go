@@ -74,8 +74,7 @@ func NewRtspTransport(opt ...TransportOption) *RtspTransport {
 }
 
 func (transport *RtspTransport) SetServerUdpPort(rtpPort uint16, rtcpPort uint16) {
-    transport.Client_ports[0] = rtpPort
-    transport.Client_ports[1] = rtcpPort
+    transport.Server_ports = [2]uint16{rtpPort, rtcpPort}
 }
 
 func (transport *RtspTransport) SetClientUdpPort(rtpPort uint16, rtcpPort uint16) {
