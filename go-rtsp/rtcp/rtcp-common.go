@@ -51,7 +51,7 @@ func (pkt *Comm) Decode(data []byte) error {
 }
 
 func (pkt *Comm) Encode() []byte {
-    data := make([]byte, pkt.Length*4+4)
+    data := make([]byte, 4+int(pkt.Length)*4)
     data[0] = 0x80
     if pkt.Padding {
         data[0] |= 0x20
@@ -61,4 +61,24 @@ func (pkt *Comm) Encode() []byte {
     data[1] = pkt.PT
     binary.BigEndian.PutUint16(data[2:], pkt.Length)
     return data
+}
+
+// encodeAlignedPayload allocates the packet for a payload measured in whole words.
+func (pkt *Comm) encodeAlignedPayload(payloadBytes int) []byte {
+    if payloadBytes > 65535 {
+        return nil
+    }
+    common := *pkt
+    if common.Padding {
+        paddingBytes := (len(common.PaddingData) + 4) &^ 3
+        if paddingBytes > 255 {
+            return nil
+        }
+        common.PaddingData = make([]byte, paddingBytes-1)
+        copy(common.PaddingData, pkt.PaddingData)
+        payloadBytes += paddingBytes
+    }
+    pkt.Length = uint16(payloadBytes / 4)
+    common.Length = pkt.Length
+    return common.Encode()
 }

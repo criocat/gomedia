@@ -71,11 +71,10 @@ func (ctx *RtcpContext) GenerateBye() *Bye {
 func (ctx *RtcpContext) GenerateSDES(sdesType uint8, txt string) *SourceDescription {
     sdes := NewSourceDescription()
     sdes.SC = 1
-    sdes.Chunks = make([]SDESChunk, 1)
-    sdes.Chunks[0].SSRC = ctx.ssrc
-    sdes.Chunks[0].Item.Length = uint8(len(txt))
-    sdes.Chunks[0].Item.Txt = []byte(txt)
-    sdes.Chunks[0].Item.Type = sdesType
+    sdes.Chunks = []SDESChunk{{
+        SSRC: ctx.ssrc,
+        Item: &ChunkItem{Type: sdesType, Length: uint8(len(txt)), Txt: []byte(txt)},
+    }}
     return sdes
 }
 

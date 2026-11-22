@@ -226,7 +226,11 @@ func (track *RtspTrack) Bye() error {
 
 func (track *RtspTrack) SourceDescription(sdesType uint8, content string) error {
     sdes := track.sendCtx.GenerateSDES(sdesType, content)
-    return track.onPacket(sdes.Encode(), true)
+    data := sdes.Encode()
+    if data == nil {
+        return fmt.Errorf("invalid RTCP SDES item: type %d, length %d", sdesType, len(content))
+    }
+    return track.onPacket(data, true)
 }
 
 func (track *RtspTrack) mediaDescripe() string {
