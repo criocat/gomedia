@@ -1,6 +1,7 @@
 package mp4
 import (
 	"encoding/binary"
+	"errors"
 	"io"
 )
 
@@ -71,11 +72,43 @@ func (senc *SencBox) Decode(r io.Reader, size uint32, perSampleIVSize uint8) (of
 }
 
 func decodeSencBox(demuxer *MovDemuxer, size uint32) (err error) {
-	perSampleIVSize := demuxer.tracks[len(demuxer.tracks)-1].defaultPerSampleIVSize
+	track := demuxer.currentTrack
+	if track == nil {
+		return errors.New("senc box has no track")
+	}
 	senc := SencBox{Box: new(FullBox)}
-	if _, err = senc.Decode(demuxer.reader, size, perSampleIVSize); err != nil {
+	if _, err = senc.Decode(demuxer.reader, size, track.defaultPerSampleIVSize); err != nil {
 		return err
 	}
-	demuxer.currentTrack.subSamples = append(demuxer.currentTrack.subSamples, senc.EntryList.entrys...)
+	track.subSamples = append(track.subSamples, senc.EntryList.entrys...)
 	return
+}
+
+func (demuxer *MovDemuxer) sampleEncryption(track *mp4track, index uint32) *SubSample {
+	if uint64(index) >= uint64(len(track.subSamples)) {
+		return nil
+	}
+	entry := track.subSamples[index]
+	sample := &SubSample{Number: index}
+	if len(entry.iv) > 0 {
+		copy(sample.IV[:], entry.iv)
+	} else {
+		copy(sample.IV[:], track.defaultConstantIV)
+	}
+	if track.lastSeig != nil {
+		sample.KID = track.lastSeig.KID
+		sample.CryptByteBlock = track.lastSeig.CryptByteBlock
+		sample.SkipByteBlock = track.lastSeig.SkipByteBlock
+	} else {
+		sample.KID = track.defaultKID
+		sample.CryptByteBlock = track.defaultCryptByteBlock
+		sample.SkipByteBlock = track.defaultSkipByteBlock
+	}
+	sample.PsshBoxes = append(sample.PsshBoxes, demuxer.pssh...)
+	for _, pattern := range entry.subSamples {
+		sample.Patterns = append(sample.Patterns, SubSamplePattern{
+			BytesClear: pattern.bytesOfClearData, BytesProtected: pattern.bytesOfProtectedData,
+		})
+	}
+	return sample
 }

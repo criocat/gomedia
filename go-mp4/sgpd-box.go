@@ -59,7 +59,7 @@ func decodeSgpdBox(demuxer *MovDemuxer, size uint32) (err error) {
 	entryCount := int(binary.BigEndian.Uint32(buf[n:]))
 	n += 4
 
-	track := demuxer.tracks[len(demuxer.tracks)-1]
+	track := demuxer.currentTrack
 	for i := 0; i < entryCount; i++ {
 		var descriptionLength = b.DefaultLength
 		if b.Version >= 1 && b.DefaultLength == 0 {
@@ -79,7 +79,7 @@ func decodeSgpdBox(demuxer *MovDemuxer, size uint32) (err error) {
 		if sgEntry == nil {
 			continue
 		}
-		if seig, ok := sgEntry.(*SeigSampleGroupEntry); ok {
+		if seig, ok := sgEntry.(*SeigSampleGroupEntry); ok && track != nil {
 			track.lastSeig = seig
 		}
 		b.SampleGroupEntries = append(b.SampleGroupEntries, sgEntry)

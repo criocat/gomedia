@@ -145,6 +145,7 @@ func (demuxer *MovDemuxer) ReadHead() ([]TrackInfo, error) {
         case mov_tag([4]byte{'t', 'r', 'a', 'k'}):
             track := &mp4track{}
             demuxer.tracks = append(demuxer.tracks, track)
+            demuxer.currentTrack = track
         case mov_tag([4]byte{'t', 'k', 'h', 'd'}):
             err = decodeTkhdBox(demuxer)
         case mov_tag([4]byte{'m', 'd', 'h', 'd'}):
@@ -229,6 +230,7 @@ func (demuxer *MovDemuxer) ReadHead() ([]TrackInfo, error) {
         case mov_tag([4]byte{'m', 'f', 'h', 'd'}):
             err = decodeMfhdBox(demuxer)
         case mov_tag([4]byte{'t', 'r', 'a', 'f'}):
+            demuxer.currentTrack = nil
         case mov_tag([4]byte{'t', 'f', 'h', 'd'}):
             err = decodeTfhdBox(demuxer, uint32(basebox.Size))
         case mov_tag([4]byte{'t', 'f', 'd', 't'}):
@@ -291,10 +293,7 @@ func (demuxer *MovDemuxer) ReadPacket() (*AVPacket, error) {
     for {
         maxdts := int64(-1)
         minTsSample := sampleEntry{dts: uint64(maxdts)}
-        var (
-			subSample *SubSample = nil
-        	whichTrack *mp4track = nil
-        )
+        var whichTrack *mp4track
         whichTracki := 0
         for i, track := range demuxer.tracks {
             idx := demuxer.readSampleIdx[i]
@@ -314,32 +313,6 @@ func (demuxer *MovDemuxer) ReadPacket() (*AVPacket, error) {
                     whichTracki = i
                 }
             }
-			if int(idx) < len(track.subSamples) {
-				subSample = new(SubSample)
-				subSample.Number = idx
-				if len(track.subSamples[idx].iv) > 0 {
-					copy(subSample.IV[:], track.subSamples[idx].iv)
-				} else {
-					copy(subSample.IV[:], track.defaultConstantIV)
-				}
-				if track.lastSeig != nil {
-					copy(subSample.KID[:], track.lastSeig.KID[:])
-					subSample.CryptByteBlock = track.lastSeig.CryptByteBlock
-					subSample.SkipByteBlock = track.lastSeig.SkipByteBlock
-				} else {
-					copy(subSample.KID[:], track.defaultKID[:])
-					subSample.CryptByteBlock = track.defaultCryptByteBlock
-					subSample.SkipByteBlock = track.defaultSkipByteBlock
-				}
-				subSample.PsshBoxes = append(subSample.PsshBoxes, demuxer.pssh...)
-				if len(track.subSamples[idx].subSamples) > 0 {
-					subSample.Patterns = make([]SubSamplePattern, len(track.subSamples[idx].subSamples))
-					for ei, e := range track.subSamples[idx].subSamples {
-						subSample.Patterns[ei].BytesClear = e.bytesOfClearData
-						subSample.Patterns[ei].BytesProtected = e.bytesOfProtectedData
-					}
-				}
-			}
         }
 
         if minTsSample.dts == uint64(maxdts) {
@@ -352,6 +325,7 @@ func (demuxer *MovDemuxer) ReadPacket() (*AVPacket, error) {
         if _, err := io.ReadFull(demuxer.reader, sample); err != nil {
             return nil, err
         }
+        sampleIndex := demuxer.readSampleIdx[whichTracki]
         demuxer.readSampleIdx[whichTracki]++
         avpkg := &AVPacket{
             Cid:     whichTrack.cid,
@@ -360,6 +334,7 @@ func (demuxer *MovDemuxer) ReadPacket() (*AVPacket, error) {
             Dts:     minTsSample.dts * 1000 / uint64(whichTrack.timescale),
         }
 		if demuxer.OnRawSample != nil {
+			subSample := demuxer.sampleEncryption(whichTrack, sampleIndex)
 			err := demuxer.OnRawSample(whichTrack.cid, sample, subSample)
 			if err != nil {
 				return nil, err
