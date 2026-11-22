@@ -107,21 +107,40 @@ func (m *Media) Encode() string {
 // }
 
 func (m *Media) ParseMLine(mediaLine string) error {
-    strs := strings.SplitN(mediaLine, " ", 4)
-    m.MediaType = strs[0]
-    pn := strings.SplitN(strs[1], "/", 2)
-    p, _ := strconv.Atoi(pn[0])
-    m.Ports = append(m.Ports, uint16(p))
-    if len(pn) > 1 {
-        numberOfPort, _ := strconv.Atoi(pn[1])
-        for i := 1; i < numberOfPort; i++ {
-            m.Ports = append(m.Ports, uint16(p)+1)
+    fields := strings.Fields(mediaLine)
+    if len(fields) < 4 {
+        return errors.New("incomplete SDP media line")
+    }
+    portRange := strings.SplitN(fields[1], "/", 2)
+    firstPort, err := strconv.ParseUint(portRange[0], 10, 16)
+    if err != nil {
+        return errors.New("invalid SDP media port")
+    }
+    var count uint64 = 1
+    if len(portRange) == 2 {
+        count, err = strconv.ParseUint(portRange[1], 10, 16)
+        if err != nil || count == 0 {
+            return errors.New("invalid SDP media port count")
         }
     }
-    m.Proto = strs[2]
-    fmts := strings.Split(strs[3], " ")
-    for _, fmt := range fmts {
-        f, _ := strconv.Atoi(fmt)
+    var step uint64 = 1
+    proto := strings.ToUpper(fields[2])
+    if strings.HasPrefix(proto, "RTP/") || strings.Contains(proto, "/RTP/") {
+        step = 2 // The intervening port belongs to RTCP.
+    }
+    if firstPort+(count-1)*step > 65535 {
+        return errors.New("SDP media port range overflows")
+    }
+
+    m.MediaType = fields[0]
+    m.Proto = fields[2]
+    m.Ports = m.Ports[:0]
+    for i := uint64(0); i < count; i++ {
+        m.Ports = append(m.Ports, uint16(firstPort+i*step))
+    }
+    m.Fmts = m.Fmts[:0]
+    for _, format := range fields[3:] {
+        f, _ := strconv.Atoi(format)
         m.Fmts = append(m.Fmts, uint8(f))
     }
     return nil
@@ -140,7 +159,11 @@ func (sdp *Sdp) Encode() string {
     sdptxt := "v=0\r\n"
     sdptxt += "o=- 0 0 IN IP4 0.0.0.0\r\n"
     sdptxt += "s=gomedia rtsp\r\n"
-    sdptxt += "c=IN IP4 \r\n"
+    connection := sdp.ConnectionData
+    if connection.Address == "" {
+        connection = Connection{Nettype: "IN", Addrtype: "IP4", Address: "0.0.0.0"}
+    }
+    sdptxt += "c=" + connection.Nettype + " " + connection.Addrtype + " " + connection.Address + "\r\n"
     sdptxt += "t=0 0\r\n"
     for attrName, attrValue := range sdp.Attrs {
         sdptxt += "a=" + attrName
