@@ -10,7 +10,8 @@ import (
 
 type RtcpContext struct {
     ssrc             uint32
-    senderSSRC       uint32
+    rtpSSRC          uint32
+    srSSRC           uint32
     maxSeq           uint16
     cycles           uint32
     baseSeq          uint32
@@ -85,17 +86,13 @@ func (ctx *RtcpContext) GenerateSR() *SenderReport {
 }
 
 func (ctx *RtcpContext) GenerateRR() *ReceiverReport {
-    rr := &ReceiverReport{Comm: Comm{PT: RTCP_RR}, RC: 1, SSRC: ctx.ssrc, Blocks: make([]ReportBlock, 1)}
-    rr.Blocks[0].SSRC = ctx.senderSSRC
-    block := ctx.getReportBlock()
-    rr.Blocks[0] = block
-    return rr
+    return &ReceiverReport{Comm: Comm{PT: RTCP_RR}, RC: 1, SSRC: ctx.ssrc, Blocks: []ReportBlock{ctx.getReportBlock()}}
 }
 
 func (ctx *RtcpContext) ReceivedSR(sr *SenderReport) {
     ctx.srClockTime = uint64(time.Now().UnixNano() / 1000)
     ctx.srNtpLsr = sr.NTP
-    ctx.senderSSRC = sr.SSRC
+    ctx.srSSRC = sr.SSRC
 }
 
 func (ctx *RtcpContext) SendRtp(pkt *rtp.RtpPacket) {
@@ -115,6 +112,7 @@ func (ctx *RtcpContext) ReceivedRtp(pkt *rtp.RtpPacket) {
     if ctx.updateSeq(pkt.Header.SequenceNumber) == 0 {
         return
     }
+    ctx.rtpSSRC = pkt.Header.SSRC
     rtpClock := uint64(time.Now().UnixNano() / 1000)
     if ctx.lastRtpClock == 0 {
         ctx.lastRtpClock = uint64(time.Now().UnixNano() / 1000)
@@ -184,16 +182,19 @@ func (ctx *RtcpContext) getReportBlock() ReportBlock {
         fraction = uint8((uint64(lostInterval) << 8) / uint64(expectedInterval))
     }
 
-    delay := time.Now().UnixNano()/1000 - int64(ctx.srClockTime)
-    lsr := uint32(ctx.srNtpLsr >> 16)
-    dlsr := uint32(float32(delay) / 1000000 * 65536)
+    rb.SSRC = ctx.srSSRC
+    if ctx.lastRtpClock != 0 {
+        rb.SSRC = ctx.rtpSSRC
+    }
+    if ctx.srClockTime != 0 && rb.SSRC == ctx.srSSRC {
+        delay := time.Now().UnixNano()/1000 - int64(ctx.srClockTime)
+        rb.Lsr = uint32(ctx.srNtpLsr >> 16)
+        rb.Dlsr = uint32(float32(delay) / 1000000 * 65536)
+    }
 
     rb.Lost = lost
     rb.Fraction = fraction
     rb.ExtendHighestSeq = extendMax
-    rb.Lsr = lsr
-    rb.Dlsr = dlsr
-    rb.SSRC = ctx.senderSSRC
     rb.Jitter = uint32(ctx.jitter)
     return rb
 }

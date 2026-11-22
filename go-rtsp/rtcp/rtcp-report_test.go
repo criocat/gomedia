@@ -77,3 +77,33 @@ func TestSenderReportDecodesEachReportBlock(t *testing.T) {
 		t.Errorf("decoded blocks after reuse = %+v, want %+v", got.Blocks, sent.Blocks)
 	}
 }
+
+func TestReceiverReportIdentifiesRTPSource(t *testing.T) {
+	const receiver, sender = 7, 0x01020304
+	ctx := NewRtcpContext(receiver, 41, 90000)
+	for _, seq := range []uint16{41, 42} {
+		ctx.ReceivedRtp(&rtp.RtpPacket{Header: rtp.RtpHdr{
+			SSRC: sender, SequenceNumber: seq, Timestamp: uint32(seq) * 3000,
+		}})
+	}
+	check := func(wantLSR uint32) {
+		t.Helper()
+		report := ctx.GenerateRR()
+		if report.SSRC != receiver || len(report.Blocks) != 1 {
+			t.Fatalf("unexpected Receiver Report: %+v", report)
+		}
+		block := report.Blocks[0]
+		if block.SSRC != sender || block.Lsr != wantLSR {
+			t.Errorf("block SSRC = %#x, LSR = %#x, want %#x and %#x", block.SSRC, block.Lsr, sender, wantLSR)
+		}
+		if wantLSR == 0 && block.Dlsr != 0 {
+			t.Errorf("DLSR without a matching Sender Report = %#x, want zero", block.Dlsr)
+		}
+	}
+
+	check(0)
+	ctx.ReceivedSR(&SenderReport{SSRC: sender + 1, NTP: 0xe552789abcde1234})
+	check(0)
+	ctx.ReceivedSR(&SenderReport{SSRC: sender, NTP: 0xe552789abcde1234})
+	check(0x789abcde)
+}
