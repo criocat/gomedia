@@ -113,12 +113,17 @@ func (demuxer *MovDemuxer) ReadHead() ([]TrackInfo, error) {
         case mov_tag([4]byte{'f', 'r', 'e', 'e'}):
             err = decodeFreeBox(demuxer, uint32(basebox.Size))
         case mov_tag([4]byte{'m', 'd', 'a', 't'}):
+            payloadSize := basebox.Size - uint64(headerSize)
+            if payloadSize > 1<<63-1 {
+                err = errors.New("mdat payload too large")
+                break
+            }
             var currentOffset int64
             if currentOffset, err = demuxer.reader.Seek(0, io.SeekCurrent); err != nil {
                 break
             }
             demuxer.mdatOffset = append(demuxer.mdatOffset, uint64(currentOffset))
-            _, err = demuxer.reader.Seek(int64(basebox.Size)-BasicBoxLen, io.SeekCurrent)
+            _, err = demuxer.reader.Seek(int64(payloadSize), io.SeekCurrent)
         case mov_tag([4]byte{'m', 'o', 'o', 'v'}):
             var currentOffset int64
             if currentOffset, err = demuxer.reader.Seek(0, io.SeekCurrent); err != nil {
@@ -470,13 +475,8 @@ func (demuxer *MovDemuxer) buildSampleList() {
             }
         }
         iterator = 0
-        track.samplelist[iterator].dts = 0
         if track.elst != nil {
-            for _, entry := range track.elst.entrys {
-                if entry.mediaTime == -1 {
-                    track.samplelist[iterator].dts = entry.segmentDuration
-                }
-            }
+            track.samplelist[iterator].dts = leadingEmptyEditDTS(track.elst.entrys, demuxer.mp4Info.Timescale, track.timescale)
         }
         iterator++
         for i := range stbl.stts.entrys {

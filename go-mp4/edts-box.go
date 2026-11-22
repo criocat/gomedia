@@ -3,6 +3,7 @@ package mp4
 import (
 	"encoding/binary"
 	"io"
+	"math/bits"
 )
 
 // aligned(8) class EditListBox extends FullBox(‘elst’, version, 0) {
@@ -157,4 +158,30 @@ func decodeElstBox(demuxer *MovDemuxer) (err error) {
 	}
 	track.elst = elst.entrys
 	return
+}
+
+func leadingEmptyEditDTS(edits []elstEntry, movieTimescale, trackTimescale uint32) uint64 {
+	if movieTimescale == 0 || len(edits) == 0 {
+		return 0
+	}
+	var duration uint64
+	for _, edit := range edits {
+		if edit.mediaTime != -1 {
+			break
+		}
+		var carry uint64
+		duration, carry = bits.Add64(duration, edit.segmentDuration, 0)
+		if carry != 0 {
+			return 0
+		}
+	}
+	// Empty-edit durations use the movie clock. Round to the nearest track tick.
+	high, low := bits.Mul64(duration, uint64(trackTimescale))
+	low, carry := bits.Add64(low, uint64(movieTimescale)/2, 0)
+	high += carry
+	if high >= uint64(movieTimescale) {
+		return 0
+	}
+	ticks, _ := bits.Div64(high, low, uint64(movieTimescale))
+	return ticks
 }
