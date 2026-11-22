@@ -109,7 +109,9 @@ type RtmpServerHandle struct {
     writeChunkSize uint32
     hs             *serverHandShake
     wndAckSize     uint32
-    peerWndAckSize uint32
+    recvAckWindow  uint32
+    bytesRead      uint32
+    lastAckBytes   uint32
     videoDemuxer   flv.VideoTagDemuxer
     videoCodec     flv.FLV_VIDEO_CODEC_ID
     audioDemuxer   flv.AudioTagDemuxer
@@ -187,6 +189,7 @@ func (server *RtmpServerHandle) GetState() RtmpState {
 }
 
 func (server *RtmpServerHandle) Input(data []byte) error {
+    server.bytesRead += uint32(len(data))
     for len(data) > 0 {
         switch server.state {
         case HandShake:
@@ -203,7 +206,10 @@ func (server *RtmpServerHandle) Input(data []byte) error {
                 server.timestamp = msg.timestamp
                 return server.handleMessage(msg)
             })
-            return err
+            if err != nil {
+                return err
+            }
+            return sendAcknowledgement(server.userCtrlChan, server.output, server.recvAckWindow, server.bytesRead, &server.lastAckBytes)
         }
     }
     return nil
@@ -291,16 +297,18 @@ func (server *RtmpServerHandle) handleMessage(msg *rtmpMessage) error {
         size := binary.BigEndian.Uint32(msg.msg)
         server.reader.chunkSize = size
     case ABORT_MESSAGE:
-        //TODO
+        return server.reader.abortMessage(msg.msg)
     case ACKNOWLEDGEMENT:
         if len(msg.msg) < 4 {
-            return errors.New("bytes of \"window acknowledgement size\"  < 4")
+            return errors.New("bytes of \"acknowledgement\"  < 4")
         }
-        server.peerWndAckSize = binary.BigEndian.Uint32(msg.msg)
     case USER_CONTROL:
         //TODO
     case WND_ACK_SIZE:
-        //TODO
+        if len(msg.msg) < 4 {
+            return errors.New("bytes of \"window acknowledgement size\"  < 4")
+        }
+        server.recvAckWindow = binary.BigEndian.Uint32(msg.msg)
     case SET_PEER_BW:
         //TODO
     case AUDIO:

@@ -297,7 +297,7 @@ func (cli *RtmpClient) handleMessage(msg *rtmpMessage) error {
 		size := binary.BigEndian.Uint32(msg.msg)
 		cli.reader.chunkSize = size
 	case ABORT_MESSAGE:
-		//TODO
+		return cli.reader.abortMessage(msg.msg)
 	case ACKNOWLEDGEMENT:
 		if len(msg.msg) < 4 {
 			return errors.New("bytes of \"acknowledgement\"  < 4")

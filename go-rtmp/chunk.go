@@ -2,6 +2,7 @@ package rtmp
 
 import (
     "encoding/binary"
+    "errors"
 )
 
 const extendedTimestampMarker = 0x00ffffff
@@ -234,6 +235,27 @@ type chunkStreamReader struct {
     headCache []byte
 }
 
+func (stream *chunkStream) advanceTimestamp() {
+    if stream.firstChunkFmt == 0 {
+        stream.timestamp = stream.pkt.msgHdr.timestamp
+    } else {
+        stream.timestamp += stream.pkt.msgHdr.timestamp
+    }
+}
+
+func (reader *chunkStreamReader) abortMessage(payload []byte) error {
+    if len(payload) != 4 {
+        return errors.New("invalid RTMP Abort Message length")
+    }
+    stream := reader.cks[binary.BigEndian.Uint32(payload)]
+    if stream != nil && len(stream.message) > 0 {
+        // Keep the header and timestamp basis for the next compressed header.
+        stream.advanceTimestamp()
+        stream.message = nil
+    }
+    return nil
+}
+
 func newChunkStreamReader(chunkSize uint32) *chunkStreamReader {
     return &chunkStreamReader{
         current:   &chunkStream{},
@@ -337,11 +359,7 @@ func (reader *chunkStreamReader) readRtmpMessage(data []byte, onMsg func(*rtmpMe
             }
 
             if int(reader.current.pkt.msgHdr.msgLen) <= len(reader.current.message) {
-                if reader.current.firstChunkFmt == 0 {
-                    reader.current.timestamp = reader.current.pkt.msgHdr.timestamp
-                } else {
-                    reader.current.timestamp += reader.current.pkt.msgHdr.timestamp
-                }
+                reader.current.advanceTimestamp()
                 msg := &rtmpMessage{
                     timestamp: reader.current.timestamp,
                     msg:       make([]byte, int(reader.current.pkt.msgHdr.msgLen)),
@@ -349,10 +367,10 @@ func (reader *chunkStreamReader) readRtmpMessage(data []byte, onMsg func(*rtmpMe
                     streamid:  reader.current.pkt.msgHdr.msgStreamId,
                 }
                 copy(msg.msg, reader.current.message)
+                reader.current.message = reader.current.message[:0]
                 if err := onMsg(msg); err != nil {
                     return err
                 }
-                reader.current.message = reader.current.message[:0]
             }
         default:
             panic("unknown state")
