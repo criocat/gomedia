@@ -34,7 +34,7 @@ import (
 type ReportBlock struct {
     SSRC             uint32
     Fraction         uint8
-    Lost             uint32
+    Lost             uint32 // Raw 24-bit signed cumulative loss field.
     ExtendHighestSeq uint32
     Jitter           uint32
     Lsr              uint32
@@ -47,7 +47,7 @@ func (rb *ReportBlock) Decode(data []byte) error {
     }
     rb.SSRC = binary.BigEndian.Uint32(data)
     rb.Fraction = data[4]
-    rb.Lost = uint32(data[5])<<16 | uint32(data[6])<<6 | uint32(data[7])
+    rb.Lost = uint32(data[5])<<16 | uint32(data[6])<<8 | uint32(data[7])
     rb.ExtendHighestSeq = binary.BigEndian.Uint32(data[8:])
     rb.Jitter = binary.BigEndian.Uint32(data[12:])
     rb.Lsr = binary.BigEndian.Uint32(data[16:])

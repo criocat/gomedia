@@ -67,6 +67,7 @@ func (pkt *SenderReport) Decode(data []byte) error {
     pkt.RtpTimestamp = binary.BigEndian.Uint32(data[16:])
     pkt.SendPacketCount = binary.BigEndian.Uint32(data[20:])
     pkt.SendOctetCount = binary.BigEndian.Uint32(data[24:])
+    pkt.Blocks = pkt.Blocks[:0]
     offset := 28
     for i := 0; i < int(pkt.RC); i++ {
         block := ReportBlock{}
@@ -74,6 +75,7 @@ func (pkt *SenderReport) Decode(data []byte) error {
             return err
         }
         pkt.Blocks = append(pkt.Blocks, block)
+        offset += 24
     }
     return nil
 }
