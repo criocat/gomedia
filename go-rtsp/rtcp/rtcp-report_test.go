@@ -3,6 +3,8 @@ package rtcp
 import (
 	"reflect"
 	"testing"
+
+	"github.com/yapingcat/gomedia/go-rtsp/rtp"
 )
 
 func TestReportBlockDecodesAllLossBits(t *testing.T) {
@@ -14,6 +16,18 @@ func TestReportBlockDecodesAllLossBits(t *testing.T) {
 		}
 		if got != want {
 			t.Errorf("decoded loss bits = %#06x, want %#06x", got.Lost, want.Lost)
+		}
+	}
+}
+
+func TestReceiverReportJitterWithReorderedTimestamps(t *testing.T) {
+	for _, base := range []uint32{0, 0xffffe000} {
+		ctx := NewRtcpContext(1, 41, 90000)
+		for i, value := range []uint32{0, 9000, 6000, 12000} {
+			ctx.ReceivedRtp(&rtp.RtpPacket{Header: rtp.RtpHdr{SequenceNumber: uint16(41 + i), Timestamp: base + value}})
+		}
+		if got := ctx.GenerateRR().Blocks[0].Jitter; got > 90000 {
+			t.Errorf("RTP clocks from %#x: jitter = %d samples, want less than one second", base, got)
 		}
 	}
 }

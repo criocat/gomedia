@@ -122,7 +122,9 @@ func (ctx *RtcpContext) ReceivedRtp(pkt *rtp.RtpPacket) {
         ctx.lastRtpTimestamp = pkt.Header.Timestamp
         ctx.jitter = 0
     } else {
-        D := int64((rtpClock-ctx.lastRtpClock)*uint64(ctx.sampleRate)/1000000) - (int64(pkt.Header.Timestamp - ctx.lastRtpTimestamp))
+        arrivalDelta := int64((rtpClock - ctx.lastRtpClock) * uint64(ctx.sampleRate) / 1000000)
+        timestampDelta := int32(pkt.Header.Timestamp - ctx.lastRtpTimestamp)
+        D := arrivalDelta - int64(timestampDelta)
         if D < 0 {
             D = -1 * D
         }

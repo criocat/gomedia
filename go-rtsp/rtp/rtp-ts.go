@@ -1,6 +1,11 @@
 package rtp
 
-import "bytes"
+import (
+    "bytes"
+    "errors"
+)
+
+const mpegTSPacketSize = 188
 
 type TsPacker struct {
     CommPacker
@@ -19,29 +24,37 @@ func NewTsPacker(pt uint8, ssrc uint32, sequence uint16, mtu int) *TsPacker {
 }
 
 func (pack *TsPacker) Pack(data []byte, timestamp uint32) error {
+    if len(data) == 0 {
+        return nil
+    }
+    if len(data)%mpegTSPacketSize != 0 {
+        return errors.New("RTP MPEG-TS input must contain whole transport packets")
+    }
+    if pack.mtu < RTP_FIX_HEAD_LEN+mpegTSPacketSize {
+        return errors.New("MTU too small for an RTP MPEG-TS packet")
+    }
+    maxPayload := (pack.mtu - RTP_FIX_HEAD_LEN) / mpegTSPacketSize * mpegTSPacketSize
     for len(data) > 0 {
+        payloadLength := len(data)
+        if payloadLength > maxPayload {
+            payloadLength = maxPayload
+        }
         pkg := RtpPacket{}
         pkg.Header.PayloadType = pack.pt
         pkg.Header.SequenceNumber = pack.sequence
         pkg.Header.SSRC = pack.ssrc
         pkg.Header.Timestamp = timestamp
-        pkg.Header.Marker = 0
-        if len(data) > pack.mtu-RTP_FIX_HEAD_LEN {
-            pkg.Payload = make([]byte, pack.mtu-RTP_FIX_HEAD_LEN)
-            copy(pkg.Payload, data[:pack.mtu-RTP_FIX_HEAD_LEN])
-            data = data[pack.mtu-RTP_FIX_HEAD_LEN:]
-        } else {
-            pkg.Payload = make([]byte, len(data))
-            copy(pkg.Payload, data)
-            data = data[:0]
-        }
+        pkg.Payload = append([]byte(nil), data[:payloadLength]...)
+        data = data[payloadLength:]
         if pack.onRtp != nil {
             pack.onRtp(&pkg)
         }
-        if pack.onPacket != nil {
-            return pack.onPacket(pkg.Encode())
-        }
         pack.sequence++
+        if pack.onPacket != nil {
+            if err := pack.onPacket(pkg.Encode()); err != nil {
+                return err
+            }
+        }
     }
     return nil
 }
