@@ -29,6 +29,19 @@ func makeAcknowledgementSize(ackSize uint32) []byte {
     return b
 }
 
+func sendAcknowledgement(writer *chunkStreamWriter, output OutputCB, window, received uint32, last *uint32) error {
+    if window == 0 || received-*last < window {
+        return nil
+    }
+    ack := writer.writeData(makeAcknowledgementSize(received), ACKNOWLEDGEMENT, 0, 0)
+    if err := output(ack); err != nil {
+        writer.current = nil
+        return err
+    }
+    *last = received
+    return nil
+}
+
 func makeSetPeerBandwidth(size uint32, limitType int) []byte {
     b := make([]byte, 5)
     binary.BigEndian.PutUint32(b, size)

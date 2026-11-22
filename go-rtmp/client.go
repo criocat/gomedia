@@ -202,15 +202,13 @@ func (cli *RtmpClient) Input(data []byte) error {
 
 		err := cli.reader.readRtmpMessage(data, func(msg *rtmpMessage) error {
 			cli.timestamp = msg.timestamp
-			if err := cli.handleMessage(msg); err != nil {
-				return err
-			}
-			return cli.sendAcknowledgement()
+			return cli.handleMessage(msg)
 		})
 
 		if err != nil {
 			return err
 		}
+		return sendAcknowledgement(cli.userCtrlChan, cli.output, cli.wndAckSize, cli.bytesRead, &cli.lastAckBytes)
 	default:
 		panic("error state")
 	}
@@ -225,16 +223,6 @@ func (cli *RtmpClient) WriteFrame(cid codec.CodecID, frame []byte, pts, dts uint
 	} else {
 		return errors.New("unsupport codec id")
 	}
-}
-
-func (cli *RtmpClient) sendAcknowledgement() error {
-	if cli.wndAckSize > 0 && cli.bytesRead-cli.lastAckBytes >= cli.wndAckSize {
-		ack := makeAcknowledgementSize(cli.bytesRead)
-		bufs := cli.userCtrlChan.writeData(ack, ACKNOWLEDGEMENT, 0, 0)
-		cli.lastAckBytes = cli.bytesRead
-		return cli.output(bufs)
-	}
-	return nil
 }
 
 func (cli *RtmpClient) WriteAudio(cid codec.CodecID, frame []byte, pts, dts uint32) error {
@@ -314,8 +302,7 @@ func (cli *RtmpClient) handleMessage(msg *rtmpMessage) error {
 		if len(msg.msg) < 4 {
 			return errors.New("bytes of \"acknowledgement\"  < 4")
 		}
-		ackBytes := binary.BigEndian.Uint32(msg.msg)
-		cli.lastAckBytes = ackBytes
+		// The peer acknowledges bytes sent by this endpoint.
 	case USER_CONTROL:
 		return cli.handleUserEvent(msg.msg)
 	case WND_ACK_SIZE:
