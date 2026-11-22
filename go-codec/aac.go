@@ -161,7 +161,7 @@ func (frame *ADTS_Frame_Header) Encode() []byte {
     hdr[1] = hdr[1] | (frame.Fix_Header.ID << 3) | (frame.Fix_Header.Layer << 1) | frame.Fix_Header.Protection_absent
     hdr[2] = frame.Fix_Header.Profile<<6 | frame.Fix_Header.Sampling_frequency_index<<2 | frame.Fix_Header.Private_bit<<1 | frame.Fix_Header.Channel_configuration>>2
     hdr[3] = frame.Fix_Header.Channel_configuration<<6 | frame.Fix_Header.Originalorcopy<<5 | frame.Fix_Header.Home<<4
-    hdr[3] = hdr[3] | frame.Variable_Header.copyright_identification_start<<3 | frame.Variable_Header.Copyright_identification_bit<<2 | byte((frame.Variable_Header.Frame_length>>11)&0x03)
+    hdr[3] = hdr[3] | frame.Variable_Header.Copyright_identification_bit<<3 | frame.Variable_Header.copyright_identification_start<<2 | byte((frame.Variable_Header.Frame_length>>11)&0x03)
     hdr[4] = byte(frame.Variable_Header.Frame_length >> 3)
     fullness := frame.Variable_Header.Adts_buffer_fullness & 0x7FF
     hdr[5] = byte((frame.Variable_Header.Frame_length&0x07)<<5) | byte(fullness>>6)

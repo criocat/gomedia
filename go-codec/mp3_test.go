@@ -2,6 +2,19 @@ package codec
 
 import "testing"
 
+func TestMPEG1LayerIFrameSizeUsesWholeSlots(t *testing.T) {
+	for padding, want := range []int{136, 140} {
+		// MPEG-1 Layer I at 128 kbps and 44.1 kHz.
+		head, err := DecodeMp3Head([]byte{0xff, 0xff, 0x40 | byte(padding)<<1, 0})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if head.FrameSize != want {
+			t.Errorf("frame size with padding %d = %d, want %d", padding, head.FrameSize, want)
+		}
+	}
+}
+
 func TestMPEG1LayerII384KbpsFrameSizes(t *testing.T) {
 	wantSizes := []int{1253, 1254}
 	// MPEG-1 Layer II at 384 kbps and 44.1 kHz with unpadded and padded frames.

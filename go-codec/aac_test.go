@@ -5,6 +5,32 @@ import (
 	"testing"
 )
 
+func TestADTSWritesCopyrightFlagsInWireOrder(t *testing.T) {
+	for _, tc := range []struct {
+		bit       uint8
+		start     uint8
+		wireFlags byte
+	}{
+		{bit: 1, wireFlags: 0x08},
+		{start: 1, wireFlags: 0x04},
+	} {
+		header := NewAdtsFrameHeader()
+		header.Variable_Header.Frame_length = 13
+		header.Variable_Header.Copyright_identification_bit = tc.bit
+		header.Variable_Header.copyright_identification_start = tc.start
+		data := header.Encode()
+		if got := data[3] & 0x0c; got != tc.wireFlags {
+			t.Errorf("copyright flags = %#02x, want %#02x", got, tc.wireFlags)
+		}
+		var decoded ADTS_Frame_Header
+		decoded.Decode(data)
+		if decoded.Variable_Header.Copyright_identification_bit != tc.bit || decoded.Variable_Header.copyright_identification_start != tc.start {
+			t.Errorf("copyright flags after round trip = %d/%d, want %d/%d",
+				decoded.Variable_Header.Copyright_identification_bit, decoded.Variable_Header.copyright_identification_start, tc.bit, tc.start)
+		}
+	}
+}
+
 func TestADTSFrameLengthEncoding(t *testing.T) {
 	for _, length := range []uint16{7, 2047, 2048, 4095, 4096, 6143, 6144, 8191} {
 		t.Run(strconv.Itoa(int(length)), func(t *testing.T) {

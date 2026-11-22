@@ -257,13 +257,12 @@ func DecodeMp3Head(data []byte) (*MP3FrameHead, error) {
         }
     }
 
-    br := head.GetBitRate()
-    head.FrameSize = head.SampleSize / 8 * br / head.GetSampleRate()
-    //layer 1 has 4 bytes padding,other has one byte
+    br, rate := head.GetBitRate(), head.GetSampleRate()
+    // Layer I rounds down to whole four-byte slots before adding padding.
     if head.Layer == LAYER_1 {
-        head.FrameSize += int(head.Padding) * 4
+        head.FrameSize = (12*br/rate + int(head.Padding)) * 4
     } else {
-        head.FrameSize += int(head.Padding)
+        head.FrameSize = head.SampleSize/8*br/rate + int(head.Padding)
     }
     return head, nil
 }
