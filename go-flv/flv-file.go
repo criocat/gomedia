@@ -64,6 +64,7 @@ const (
     FLV_PARSER_VIDEO_TAG
     FLV_PARSER_AUDIO_TAG
     FLV_PARSER_SCRIPT_TAG
+    FLV_PARSER_HEADER_EXTENSION
 )
 
 type FlvReader struct {
@@ -72,6 +73,7 @@ type FlvReader struct {
     videoDemuxer VideoTagDemuxer
     audioDemuxer AudioTagDemuxer
     flvTag       FlvTag
+    headerSkip   uint32
     OnFrame      func(cid codec.CodecID, frame []byte, pts uint32, dts uint32)
 }
 
@@ -106,8 +108,26 @@ func (f *FlvReader) Input(data []byte) (err error) {
             if err = f.readFlvHeader(buf[:9]); err != nil {
                 goto end
             }
+            headerLength := binary.BigEndian.Uint32(buf[5:9])
+            if headerLength < 9 {
+                return errors.New("FLV DataOffset is smaller than the file header")
+            }
             buf = buf[9:]
             f.state = FLV_PARSER_TAG_SIZE
+            if headerLength > 9 {
+                f.headerSkip = headerLength - 9
+                f.state = FLV_PARSER_HEADER_EXTENSION
+            }
+        case FLV_PARSER_HEADER_EXTENSION:
+            skip := len(buf)
+            if uint64(skip) > uint64(f.headerSkip) {
+                skip = int(f.headerSkip)
+            }
+            buf = buf[skip:]
+            f.headerSkip -= uint32(skip)
+            if f.headerSkip == 0 {
+                f.state = FLV_PARSER_TAG_SIZE
+            }
         case FLV_PARSER_TAG_SIZE:
             if len(buf) < 4 {
                 goto end

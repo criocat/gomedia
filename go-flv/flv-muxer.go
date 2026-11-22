@@ -87,11 +87,14 @@ func (muxer *AVCMuxer) Write(frames []byte, pts uint32, dts uint32) [][]byte {
     var isKey bool = false
     configurationChanged := false
     codec.SplitFrameWithStartCode(frames, func(nalu []byte) bool {
-        naltype := codec.H264NaluType(nalu)
+        start, sc := codec.FindStartCode(nalu, 0)
+        payload := nalu[start+int(sc):]
+        if len(payload) == 0 {
+            return true
+        }
+        naltype := codec.H264NaluTypeWithoutStartCode(payload)
         switch naltype {
         case codec.H264_NAL_SPS, codec.H264_NAL_PPS:
-            start, sc := codec.FindStartCode(nalu, 0)
-            payload := nalu[start+int(sc):]
             var sets map[uint64][]byte
             var id uint64
             if naltype == codec.H264_NAL_SPS {
@@ -111,7 +114,7 @@ func (muxer *AVCMuxer) Write(frames []byte, pts uint32, dts uint32) [][]byte {
                     isKey = true
                 }
             }
-            muxer.cache = append(muxer.cache, codec.ConvertAnnexBToAVCC(nalu)...)
+            muxer.cache = appendLengthPrefixedNAL(muxer.cache, payload)
         }
         return true
     })
