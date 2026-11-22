@@ -225,15 +225,15 @@ func DecodeOpusPacket(packet []byte) *OpusPacket {
         pkt.Frame = packet[1:]
     case 2:
         pkt.FrameCount = 2
-        hdr := 1
-        N1 := int(packet[1])
-        if N1 >= 252 {
-            N1 = N1 + int(packet[2]*4)
-            hdr = 2
+        pkt.Vbr = 1
+        payloadOffset := 2
+        firstLength := int(packet[1])
+        if firstLength >= 252 {
+            firstLength += int(packet[2]) * 4
+            payloadOffset++
         }
-        pkt.FrameLen = make([]uint16, 2)
-        pkt.FrameLen[0] = uint16(N1)
-        pkt.FrameLen[1] = uint16(len(packet)-hdr) - uint16(N1)
+        pkt.Frame = packet[payloadOffset:]
+        pkt.FrameLen = []uint16{uint16(firstLength), uint16(len(pkt.Frame) - firstLength)}
     case 3:
         hdr := 2
         pkt.Vbr = int(packet[1] >> 7)
@@ -392,7 +392,7 @@ func (ctx *OpusContext) ParseExtranData(extraData []byte) error {
         }
 
         for j := 0; j < i; j++ {
-            if channel[order(ctx.ChannelCount, i)] == index {
+            if channel[order(ctx.ChannelCount, j)] == index {
                 cm.Copy = true
                 cm.CopyFrom = j
                 break
