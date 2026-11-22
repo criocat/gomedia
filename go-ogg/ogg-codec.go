@@ -63,9 +63,7 @@ type oggParser interface {
 func createParser(cid codec.CodecID) oggParser {
     switch cid {
     case codec.CODECID_AUDIO_OPUS:
-        return &opusDemuxer{
-            lastpts: ^uint64(0),
-        }
+        return &opusDemuxer{}
     case codec.CODECID_VIDEO_VP8:
         return &vp8Demuxer{
             lastpts: ^uint64(0),
@@ -77,10 +75,11 @@ func createParser(cid codec.CodecID) oggParser {
 }
 
 type opusDemuxer struct {
-    extradata []byte
-    ctx       codec.OpusContext
-    lastpts   uint64
-    granule   uint64
+    extradata   []byte
+    ctx         codec.OpusContext
+    nextGranule uint64
+    pageSeq     uint32
+    hasAudio    bool
 }
 
 // opus ID head
@@ -102,49 +101,47 @@ type opusDemuxer struct {
 // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
 func (opus *opusDemuxer) header(stream *oggStream, packet []byte) (err error) {
-    if bytes.Equal([]byte("OpusHead"), packet[0:8]) {
-        opus.extradata = make([]byte, len(packet))
-        copy(opus.extradata, packet)
-        err = opus.ctx.ParseExtranData(packet)
-        if err != nil {
+    if bytes.HasPrefix(packet, []byte("OpusHead")) {
+        if err := opus.ctx.ParseExtranData(packet); err != nil {
             return err
         }
-    } else if bytes.Equal([]byte("OpusTags"), packet[0:8]) {
+        opus.extradata = append([]byte(nil), packet...)
+        return nil
+    }
+    if bytes.HasPrefix(packet, []byte("OpusTags")) {
         return nil
     }
     return errors.New(`unsupported opus header` + strconv.Quote(string(packet)))
 }
 
-func (opus *opusDemuxer) packet(stream *oggStream, packet []byte) (frame []byte, pts uint64, dts uint64) {
-
-    if stream.lost == 1 {
-        return packet, opus.lastpts, opus.lastpts
-    }
-
-    if opus.lastpts == ^uint64(0) {
-        opus.lastpts = 0
-    }
-    frame = packet
-    pts = opus.lastpts
-    dts = pts
-
-    if opus.granule != stream.currentPage.granulePos && !stream.currentPage.eos {
-        opus.lastpts = 0
-        opus.granule = stream.currentPage.granulePos
-    }
-
-    if opus.lastpts == 0 {
-        var duration uint64
-        for _, seg := range stream.currentPage.packets {
-            duration += codec.OpusPacketDuration(seg)
+func (opus *opusDemuxer) packet(stream *oggStream, packet []byte) ([]byte, uint64, uint64) {
+    page := stream.currentPage
+    if stream.lost == 0 && (!opus.hasAudio || opus.pageSeq != page.pageSeq) {
+        // After earlier audio, the EOS granule trims the end of the page.
+        // Timestamp its packets forward from the previous page instead.
+        if !page.eos || !opus.hasAudio {
+            var duration uint64
+            for _, pkt := range page.packets {
+                duration += codec.OpusPacketDuration(pkt)
+            }
+            opus.nextGranule = 0
+            if page.granulePos >= duration {
+                opus.nextGranule = page.granulePos - duration
+            }
         }
-        opus.lastpts = opus.granule - duration - uint64(opus.ctx.Preskip)
+        opus.pageSeq = page.pageSeq
+        opus.hasAudio = true
     }
 
-    duration := codec.OpusPacketDuration(packet)
-    opus.lastpts = opus.lastpts + duration
-
-    return
+    // The callback uses unsigned timestamps. Clamp packets in pre-skip to zero.
+    var pts uint64
+    if preskip := uint64(opus.ctx.Preskip); opus.nextGranule >= preskip {
+        pts = opus.nextGranule - preskip
+    }
+    if stream.lost == 0 {
+        opus.nextGranule += codec.OpusPacketDuration(packet)
+    }
+    return packet, pts, pts
 }
 func (opus *opusDemuxer) gptopts(granulePos uint64) uint64 {
     return 0
