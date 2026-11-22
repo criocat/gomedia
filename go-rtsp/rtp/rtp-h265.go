@@ -52,15 +52,16 @@ func NewH265Packer(pt uint8, ssrc uint32, sequence uint16, mtu int) *H265Packer 
 }
 
 func (h265 *H265Packer) Pack(data []byte, timestamp uint32) error {
+    var err error
     codec.SplitFrame(data, func(nalu []byte) bool {
         if len(nalu)+RTP_FIX_HEAD_LEN < h265.mtu {
-            h265.packSingleNalu(nalu, timestamp)
+            err = h265.packSingleNalu(nalu, timestamp)
         } else {
-            h265.packFu(nalu, timestamp)
+            err = h265.packFu(nalu, timestamp)
         }
-        return true
+        return err == nil
     })
-    return nil
+    return err
 }
 
 func (h265 *H265Packer) packSingleNalu(nalu []byte, timestamp uint32) error {
@@ -76,10 +77,10 @@ func (h265 *H265Packer) packSingleNalu(nalu []byte, timestamp uint32) error {
     if h265.onRtp != nil {
         h265.onRtp(&pkg)
     }
-    if h265.onPacket != nil {
-        h265.onPacket(pkg.Encode())
-    }
     h265.sequence++
+    if h265.onPacket != nil {
+        return h265.onPacket(pkg.Encode())
+    }
     return nil
 }
 
@@ -120,11 +121,13 @@ func (h265 *H265Packer) packFu(nalu []byte, timestamp uint32) error {
         if h265.onRtp != nil {
             h265.onRtp(&pkg)
         }
+        h265.sequence++
         if h265.onPacket != nil {
-            h265.onPacket(pkg.Encode())
+            if err := h265.onPacket(pkg.Encode()); err != nil {
+                return err
+            }
         }
         nalu = nalu[length:]
-        h265.sequence++
     }
     return nil
 }

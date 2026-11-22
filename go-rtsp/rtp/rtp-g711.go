@@ -35,10 +35,10 @@ func (packer *G711Packer) Pack(data []byte, timestamp uint32) error {
     if packer.onRtp != nil {
         packer.onRtp(&pkg)
     }
+    packer.sequence++
     if packer.onPacket != nil {
         return packer.onPacket(pkg.Encode())
     }
-    packer.sequence++
     return nil
 }
 
