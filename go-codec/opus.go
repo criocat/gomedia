@@ -175,7 +175,7 @@ func OpusPacketDuration(packet []byte) uint64 {
     } else if code == 1 || code == 2 {
         frameCount = 2
     } else if code == 3 {
-        frameCount = int(packet[1] & 0x1F)
+        frameCount = int(packet[1] & 0x3F)
     } else {
         panic("code must <= 3")
     }
@@ -237,15 +237,15 @@ func DecodeOpusPacket(packet []byte) *OpusPacket {
     case 3:
         hdr := 2
         pkt.Vbr = int(packet[1] >> 7)
-        padding := packet[1] >> 6
-        pkt.FrameCount = int(packet[1] & 0x1F)
+        pkt.FrameCount = int(packet[1] & 0x3F)
         paddingLen := 0
-        if padding == 1 {
+        if packet[1]&0x40 != 0 {
             for packet[hdr] == 255 {
                 paddingLen += 254
                 hdr++
             }
             paddingLen += int(packet[hdr])
+            hdr++
         }
 
         if pkt.Vbr == 0 {
@@ -258,7 +258,7 @@ func DecodeOpusPacket(packet []byte) *OpusPacket {
                 N1 := int(packet[hdr])
                 hdr += 1
                 if N1 >= 252 {
-                    N1 = N1 + int(packet[hdr]*4)
+                    N1 += int(packet[hdr]) * 4
                     hdr += 1
                 }
                 n += N1
@@ -381,11 +381,12 @@ func (ctx *OpusContext) ParseExtranData(extraData []byte) error {
         copy(ctx.Channel, channel)
     }
 
+    channelMaps := make([]ChannelMap, 0, ctx.ChannelCount)
     for i := 0; i < ctx.ChannelCount; i++ {
         cm := ChannelMap{}
         index := channel[order(ctx.ChannelCount, i)]
         if index == 255 {
-            cm.Silence = true
+            channelMaps = append(channelMaps, ChannelMap{Silence: true})
             continue
         } else if index > byte(ctx.StereoStreamCount)+byte(ctx.StreamCount) {
             return errors.New("index must < (streamcount + stereo streamcount)")
@@ -410,8 +411,9 @@ func (ctx *OpusContext) ParseExtranData(extraData []byte) error {
             cm.StreamIdx = int(index) - ctx.StereoStreamCount
             cm.ChannelIdx = 0
         }
-        ctx.ChannelMaps = append(ctx.ChannelMaps, cm)
+        channelMaps = append(channelMaps, cm)
     }
+    ctx.ChannelMaps = channelMaps
 
     return nil
 }

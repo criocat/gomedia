@@ -54,6 +54,46 @@ func TestDecodeOpusPacketTwoFrameVBR(t *testing.T) {
 	}
 }
 
+func TestOpusCode3CountsFortyFrames(t *testing.T) {
+	// Forty 2.5 ms CELT DTX frames, as reported by libopus.
+	packet := []byte{0x83, 40}
+	if got := OpusPacketDuration(packet); got != 4800 {
+		t.Errorf("duration = %d samples, want 4800", got)
+	}
+	decoded := DecodeOpusPacket(packet)
+	if decoded.Duration != 4800 || decoded.FrameCount != 40 || len(decoded.Frame) != 0 {
+		t.Errorf("unexpected decoded DTX packet: %+v", decoded)
+	}
+}
+
+func TestOpusCode3ExcludesPadding(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		header  []byte
+		lengths []uint16
+		padding int
+	}{
+		{name: "CBR", header: []byte{0x41, 10}, lengths: []uint16{3}, padding: 10},
+		{name: "VBR", header: []byte{0xc2, 255, 5, 252, 64}, lengths: []uint16{508, 3}, padding: 259},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payloadSize := int(tc.lengths[0])
+			if len(tc.lengths) > 1 {
+				payloadSize += int(tc.lengths[1])
+			}
+			payload := bytes.Repeat([]byte{0x3a}, payloadSize)
+			packet := append([]byte{0x83}, tc.header...)
+			packet = append(packet, payload...)
+			packet = append(packet, make([]byte, tc.padding)...)
+			got := DecodeOpusPacket(packet)
+			if got.FrameCount != len(tc.lengths) || !reflect.DeepEqual(got.FrameLen, tc.lengths) || !bytes.Equal(got.Frame, payload) {
+				t.Errorf("frame count = %d, lengths = %v, payload size = %d, want lengths %v and %d matching bytes",
+					got.FrameCount, got.FrameLen, len(got.Frame), tc.lengths, len(payload))
+			}
+		})
+	}
+}
+
 func TestOpusChannelMapping(t *testing.T) {
 	stereo := OpusContext{ChannelCount: 2, SampleRate: 48000}
 	var parsedStereo OpusContext
@@ -77,5 +117,23 @@ func TestOpusChannelMapping(t *testing.T) {
 	wantMultichannel := []ChannelMap{{ChannelIdx: LEFT_CHANNEL}, {StreamIdx: 1}, {StreamIdx: 1, Copy: true, CopyFrom: 1}}
 	if !reflect.DeepEqual(parsedMultichannel.ChannelMaps, wantMultichannel) {
 		t.Errorf("multichannel mapping = %+v, want %+v", parsedMultichannel.ChannelMaps, wantMultichannel)
+	}
+}
+
+func TestOpusChannelMappingKeepsSilence(t *testing.T) {
+	context := OpusContext{ChannelCount: 3, SampleRate: 48000}
+	extra := context.WriteOpusExtraData()
+	extra[18] = 1
+	// One silent output followed by two outputs copying the same mono stream.
+	extra = append(extra, 2, 1, 255, 2, 2)
+	var parsed OpusContext
+	want := []ChannelMap{{Silence: true}, {StreamIdx: 1}, {StreamIdx: 1, Copy: true, CopyFrom: 1}}
+	for i := 0; i < 2; i++ {
+		if err := parsed.ParseExtranData(extra); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(parsed.ChannelMaps, want) {
+			t.Fatalf("channel mapping = %+v, want %+v", parsed.ChannelMaps, want)
+		}
 	}
 }
