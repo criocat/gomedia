@@ -202,10 +202,7 @@ func (server *RtmpServerHandle) Input(data []byte) error {
             data = data[r:]
         case ReadChunk:
 
-            err := server.reader.readRtmpMessage(data, func(msg *rtmpMessage) error {
-                server.timestamp = msg.timestamp
-                return server.handleMessage(msg)
-            })
+            err := server.reader.readRtmpMessage(data, server.handleMessage)
             if err != nil {
                 return err
             }
@@ -280,6 +277,7 @@ func (server *RtmpServerHandle) changeState(newState RtmpState) {
 }
 
 func (server *RtmpServerHandle) handleMessage(msg *rtmpMessage) error {
+    server.timestamp = msg.timestamp
     switch msg.msgtype {
     case SET_CHUNK_SIZE:
         if len(msg.msg) < 4 {
@@ -314,6 +312,7 @@ func (server *RtmpServerHandle) handleMessage(msg *rtmpMessage) error {
     case SharedObject_AMF0:
     case SharedObject_AMF3:
     case Aggregate:
+        return dispatchAggregate(msg, server.handleMessage)
     default:
         return errors.New("unkown message type")
     }

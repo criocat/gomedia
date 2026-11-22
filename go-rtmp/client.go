@@ -207,10 +207,7 @@ func (cli *RtmpClient) Input(data []byte) error {
 		fallthrough
 	case ReadChunk:
 
-		err := cli.reader.readRtmpMessage(data, func(msg *rtmpMessage) error {
-			cli.timestamp = msg.timestamp
-			return cli.handleMessage(msg)
-		})
+		err := cli.reader.readRtmpMessage(data, cli.handleMessage)
 
 		if err != nil {
 			return err
@@ -286,6 +283,7 @@ func (cli *RtmpClient) changeState(newState RtmpState) {
 }
 
 func (cli *RtmpClient) handleMessage(msg *rtmpMessage) error {
+	cli.timestamp = msg.timestamp
 	switch msg.msgtype {
 	case SET_CHUNK_SIZE:
 		if len(msg.msg) < 4 {
@@ -321,6 +319,7 @@ func (cli *RtmpClient) handleMessage(msg *rtmpMessage) error {
 	case SharedObject_AMF0:
 	case SharedObject_AMF3:
 	case Aggregate:
+		return dispatchAggregate(msg, cli.handleMessage)
 	default:
 		return errors.New("unkow message type")
 	}
