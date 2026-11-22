@@ -314,7 +314,7 @@ func (client *RtspClient) handleResponse(res []byte) (ret int, err error) {
 }
 
 func (client *RtspClient) handleRequest(req []byte) (ret int, err error) {
-    request := RtspRequest{}
+    request := RtspRequest{Fileds: make(HeadFiled)}
     ret, err = request.parse(string(req))
     if err != nil {
         return

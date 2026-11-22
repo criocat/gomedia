@@ -142,6 +142,14 @@ var errNeedMore error = errors.New("need more")
 
 type HeadFiled map[string]string
 
+func rtspHeaderName(name string) string {
+    name = strings.TrimSpace(name)
+    if strings.EqualFold(name, CSeq) {
+        return CSeq
+    }
+    return strings.Title(name)
+}
+
 func (filed HeadFiled) Add(key string, value interface{}) {
     switch v := value.(type) {
     case int:
@@ -182,7 +190,7 @@ func (req *RtspRequest) parse(data string) (int, error) {
     req.parseFirstLine(strs[0])
     for i := 1; i < len(strs); i++ {
         kv := strings.SplitN(strs[i], ":", 2)
-        k := strings.Title(strings.TrimSpace(kv[0]))
+        k := rtspHeaderName(kv[0])
         v := strings.TrimSpace(kv[1])
         req.Fileds[k] = v
     }
@@ -343,7 +351,7 @@ func (res *RtspResponse) parse(data string) (int, error) {
 
     for i := 1; i < len(strs); i++ {
         kv := strings.SplitN(strs[i], ":", 2)
-        k := strings.Title(strings.TrimSpace(kv[0]))
+        k := rtspHeaderName(kv[0])
         v := strings.TrimSpace(kv[1])
         res.Fileds[k] = v
     }
