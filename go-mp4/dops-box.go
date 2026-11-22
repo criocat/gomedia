@@ -137,6 +137,9 @@ func opusSpecificBoxFromHead(extraData []byte) (*OpusSpecificBox, error) {
 	dops.InputSampleRate = binary.LittleEndian.Uint32(extraData[12:])
 	dops.OutputGain = int16(binary.LittleEndian.Uint16(extraData[16:]))
 	dops.ChannelMappingFamily = extraData[18]
+	if dops.ChannelMappingFamily == 0 && dops.OutputChannelCount > 2 {
+		return nil, errors.New("OpusHead with more than two channels requires a channel mapping")
+	}
 	if dops.ChannelMappingFamily != 0 {
 		end := 21 + int(dops.OutputChannelCount)
 		if len(extraData) < end {
@@ -151,11 +154,59 @@ func opusSpecificBoxFromHead(extraData []byte) (*OpusSpecificBox, error) {
 	return dops, nil
 }
 
-func makeOpusSpecificBox(extraData []byte) []byte {
-	dops, err := opusSpecificBoxFromHead(extraData)
-	if err != nil {
-		return nil
+func decodeOpusSampleEntry(demuxer *MovDemuxer, format [4]byte, size uint64) error {
+	if len(demuxer.tracks) == 0 || size > uint64(1<<63-1) {
+		return errors.New("invalid Opus sample entry")
 	}
-	_, dopsbox := dops.Encode()
-	return dopsbox
+	reader := &io.LimitedReader{R: demuxer.reader, N: int64(size)}
+	entry := NewAudioSampleEntry(format)
+	if _, err := entry.Decode(reader); err != nil {
+		return err
+	}
+	channels := uint8(entry.channelcount)
+	for reader.N > 0 {
+		var box BasicBox
+		headerSize, err := box.Decode(reader)
+		if err != nil {
+			return err
+		}
+		if box.Size < uint64(headerSize) || box.Size-uint64(headerSize) > uint64(reader.N) {
+			return errors.New("invalid Opus sample entry child size")
+		}
+		bodySize := box.Size - uint64(headerSize)
+		if box.Type == [4]byte{'d', 'O', 'p', 's'} {
+			if format[0] == 'O' {
+				if bodySize > 11+2+255 {
+					return errors.New("dOps box too large")
+				}
+				config := NewdOpsBox()
+				if _, err := config.Decode(reader, uint32(bodySize)+BasicBoxLen); err != nil {
+					return err
+				}
+				channels = config.OutputChannelCount
+				continue
+			}
+			// Old gomedia files put the output count in the same position,
+			// but used a different size and layout for the rest of dOps.
+			if bodySize >= 2 {
+				var fields [2]byte
+				if _, err := io.ReadFull(reader, fields[:]); err != nil {
+					return err
+				}
+				if fields[1] != 0 {
+					channels = fields[1]
+				}
+				bodySize -= 2
+			}
+		}
+		if _, err := io.CopyN(io.Discard, reader, int64(bodySize)); err != nil {
+			return err
+		}
+	}
+	track := demuxer.tracks[len(demuxer.tracks)-1]
+	track.cid = MP4_CODEC_OPUS
+	track.chanelCount = channels
+	track.sampleBits = uint8(entry.samplesize)
+	track.sampleRate = entry.samplerate
+	return nil
 }

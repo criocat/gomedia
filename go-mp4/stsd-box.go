@@ -320,6 +320,7 @@ func makeStsd(track *mp4track, handler_type HandlerType) []byte {
     inBand := state != nil && state.inBand
     var avbox []byte
     var extraData []byte
+    var opusConfig *OpusSpecificBox
     if len(track.extraData) == 0 {
         if track.cid == MP4_CODEC_AAC || track.cid == MP4_CODEC_H264 || track.cid == MP4_CODEC_H265 {
             if track.extra == nil {
@@ -341,7 +342,10 @@ func makeStsd(track *mp4track, handler_type HandlerType) []byte {
     } else if track.cid == MP4_CODEC_AAC || track.cid == MP4_CODEC_MP2 || track.cid == MP4_CODEC_MP3 {
         avbox = makeEsdsBox(track.trackId, track.cid, extraData)
     } else if track.cid == MP4_CODEC_OPUS {
-        avbox = makeOpusSpecificBox(extraData)
+        if config, err := opusSpecificBoxFromHead(extraData); err == nil {
+            opusConfig = config
+            _, avbox = opusConfig.Encode()
+        }
     }
 
     var se []byte
@@ -366,6 +370,14 @@ func makeStsd(track *mp4track, handler_type HandlerType) []byte {
         entry.channelcount = uint16(track.chanelCount)
         entry.samplerate = track.sampleRate
         entry.samplesize = uint16(track.sampleBits)
+        if opusConfig != nil {
+            entry.samplerate = 48000
+            entry.samplesize = 16
+            entry.channelcount = uint16(opusConfig.OutputChannelCount)
+            if table := opusConfig.ChanMapTable; table != nil {
+                entry.channelcount = uint16(table.StreamCount) + uint16(table.CoupledCount)
+            }
+        }
         entry.entry.box.Size = entry.Size() + uint64(len(avbox))
         offset, se = entry.Encode()
     }

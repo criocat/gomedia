@@ -577,6 +577,12 @@ func (track *mp4track) writeG711(g711 []byte, pts, dts uint64) (err error) {
     }
     n := 0
     n, err = track.writer.Write(g711)
+    if err != nil {
+        return err
+    }
+    if n != len(g711) {
+        return io.ErrShortWrite
+    }
     entry.size = uint64(n)
     track.addSampleEntry(entry)
     return
@@ -598,19 +604,37 @@ func (track *mp4track) writeMP3(mp3 []byte, pts, dts uint64) (err error) {
     return track.writeG711(mp3, pts, dts)
 }
 
-func (track *mp4track) writeOPUS(opus []byte, pts, dts uint64) (err error) {
-    if track.sampleRate == 0 {
-        opusPacket := codec.DecodeOpusPacket(opus)
-	track.sampleRate = 48000 // TODO: fixed?
-    	if opusPacket.Stereo != 0 {
-		track.chanelCount = 1
-    	} else {
-		track.chanelCount = 2
-    	}
-    	track.sampleBits = 16 // TODO: fixed
+func (track *mp4track) writeOPUS(opus []byte, pts, dts uint64) error {
+    if len(opus) == 0 {
+        return errors.New("empty Opus packet")
     }
-
-    return track.writeG711(opus, pts, dts)
+    if len(track.samplelist) > 0 {
+        return track.writeG711(opus, pts, dts)
+    }
+    extraData := track.extraData
+    if len(extraData) == 0 {
+        channels := track.chanelCount
+        if channels == 0 {
+            channels = 1 + ((opus[0] >> 2) & 1)
+        }
+        if channels > 2 {
+            return errors.New("multichannel Opus requires OpusHead")
+        }
+        context := codec.OpusContext{ChannelCount: int(channels), SampleRate: 48000}
+        extraData = context.WriteOpusExtraData()
+    }
+    config, err := opusSpecificBoxFromHead(extraData)
+    if err != nil {
+        return err
+    }
+    if err := track.writeG711(opus, pts, dts); err != nil {
+        return err
+    }
+    track.extraData = extraData
+    track.chanelCount = config.OutputChannelCount
+    track.sampleRate = 48000
+    track.sampleBits = 16
+    return nil
 }
 
 func (track *mp4track) flush() (err error) {

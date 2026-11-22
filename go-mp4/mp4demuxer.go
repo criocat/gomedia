@@ -98,11 +98,12 @@ func (demuxer *MovDemuxer) ReadHead() ([]TrackInfo, error) {
     for {
         fullbox := FullBox{}
         basebox := BasicBox{}
-        _, err = basebox.Decode(demuxer.reader)
-        if err != nil {
+        headerSize, boxErr := basebox.Decode(demuxer.reader)
+        if boxErr != nil {
+            err = boxErr
             break
         }
-        if basebox.Size < BasicBoxLen {
+        if basebox.Size < uint64(headerSize) {
             err = errors.New("mp4 Parser error")
             break
         }
@@ -201,8 +202,8 @@ func (demuxer *MovDemuxer) ReadHead() ([]TrackInfo, error) {
         case mov_tag([4]byte{'a', 'l', 'a', 'w'}):
             demuxer.tracks[len(demuxer.tracks)-1].cid = MP4_CODEC_G711A
             err = decodeAudioSampleEntry(demuxer)
-        case mov_tag([4]byte{'o', 'p', 'u', 's'}):
-            demuxer.tracks[len(demuxer.tracks)-1].cid = MP4_CODEC_OPUS
+        case mov_tag([4]byte{'O', 'p', 'u', 's'}), mov_tag([4]byte{'o', 'p', 'u', 's'}):
+            err = decodeOpusSampleEntry(demuxer, basebox.Type, basebox.Size-uint64(headerSize))
         case mov_tag([4]byte{'a', 'v', 'c', 'C'}):
             err = decodeAvccBox(demuxer, uint32(basebox.Size))
         case mov_tag([4]byte{'h', 'v', 'c', 'C'}):
