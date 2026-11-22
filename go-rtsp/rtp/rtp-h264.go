@@ -50,9 +50,11 @@ func (pack *H264Packer) EnableStapA() {
 
 func (pack *H264Packer) Pack(frame []byte, timestamp uint32) (err error) {
     codec.SplitFrame(frame, func(nalu []byte) bool {
-        nalu_type := codec.H264NaluType(nalu)
+        if len(nalu) == 0 {
+            return true
+        }
         if pack.stap_a {
-            switch nalu_type {
+            switch codec.H264NaluTypeWithoutStartCode(nalu) {
             case codec.H264_NAL_SPS:
                 return true
             case codec.H264_NAL_PPS:
@@ -64,8 +66,10 @@ func (pack *H264Packer) Pack(frame []byte, timestamp uint32) (err error) {
                 pack.pps = nil
             }
         }
-        if len(frame)+RTP_FIX_HEAD_LEN < pack.mtu {
+        if len(nalu)+RTP_FIX_HEAD_LEN <= pack.mtu {
             err = pack.packSingleNalu(nalu, timestamp)
+        } else if pack.mtu <= RTP_FIX_HEAD_LEN+2 {
+            err = errors.New("MTU too small for an H.264 RTP fragment")
         } else {
             err = pack.packFuA(nalu, timestamp)
         }
