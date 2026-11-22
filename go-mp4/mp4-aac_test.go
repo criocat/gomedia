@@ -85,3 +85,39 @@ func TestMP4AACBatchTimestampsUseCumulativeSamples(t *testing.T) {
 		}
 	}
 }
+
+func TestMP4AACChannelConfigurationSevenHasEightChannels(t *testing.T) {
+	// One 48 kHz AAC-LC 7.1 frame produced by FFmpeg, with ADTS config 7.
+	frame := []byte{
+		0xff, 0xf1, 0x4d, 0xc0, 0x03, 0xff, 0xfc, 0x01, 0x18, 0x20, 0x01,
+		0x08, 0x80, 0x23, 0x04, 0x60, 0x23, 0x10, 0x04, 0x60, 0x8c, 0x04,
+		0xa2, 0x00, 0x8c, 0x11, 0x81, 0x84, 0x60, 0x00, 0x1c,
+	}
+	output := newFmp4WriterSeeker(4096)
+	muxer, err := CreateMp4Muxer(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := muxer.AddAudioTrack(MP4_CODEC_AAC)
+	if err := muxer.Write(id, bytes.Repeat(frame, 2), 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := muxer.WriteTrailer(); err != nil {
+		t.Fatal(err)
+	}
+	demuxer := CreateMp4Demuxer(bytes.NewReader(output.buffer))
+	tracks, err := demuxer.ReadHead()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tracks) != 1 || tracks[0].ChannelCount != 8 || tracks[0].SampleRate != 48000 {
+		t.Errorf("tracks = %+v, want eight channels at 48000 Hz", tracks)
+	}
+	packet, err := demuxer.ReadPacket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config := (packet.Data[2]&1)<<2 | packet.Data[3]>>6; config != 7 {
+		t.Errorf("AAC channel configuration = %d, want 7", config)
+	}
+}

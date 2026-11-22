@@ -202,22 +202,23 @@ func CreateVideoMuxer(cid FLV_VIDEO_CODEC_ID) AVTagMuxer {
 }
 
 type AACMuxer struct {
-    updateSequence bool
+    config codec.AudioSpecificConfiguration
 }
 
 func NewAACMuxer() *AACMuxer {
-    return &AACMuxer{updateSequence: true}
+    return &AACMuxer{}
 }
 
 func (muxer *AACMuxer) Write(frames []byte, pts uint32, dts uint32) [][]byte {
     var tags [][]byte
     codec.SplitAACFrame(frames, func(aac []byte) {
-        hdr := codec.NewAdtsFrameHeader()
-        hdr.Decode(aac)
-        if muxer.updateSequence {
-            asc, _ := codec.ConvertADTSToASC(aac)
+        asc, err := codec.ConvertADTSToASC(aac)
+        if err != nil {
+            return
+        }
+        if muxer.config != *asc {
             tags = append(tags, WriteAudioTag(asc.Encode(), FLV_AAC, 0, 0, true))
-            muxer.updateSequence = false
+            muxer.config = *asc
         }
         tags = append(tags, WriteAudioTag(aac[7:], FLV_AAC, 0, 0, false))
     })
@@ -273,7 +274,7 @@ func (muxer *Mp3Muxer) Write(frames []byte, pts uint32, dts uint32) [][]byte {
 
 func CreateAudioMuxer(cid FLV_SOUND_FORMAT) AVTagMuxer {
     if cid == FLV_AAC {
-        return &AACMuxer{updateSequence: true}
+        return NewAACMuxer()
     } else if cid == FLV_G711A {
         return NewG711AMuxer(1, 5500)
     } else if cid == FLV_G711U {

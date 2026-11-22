@@ -550,6 +550,9 @@ func (track *mp4track) writeAAC(aacframes []byte, pts, dts uint64) error {
             aacextra.asc = asc.Encode()
             if track.chanelCount == 0 {
                 track.chanelCount = asc.Channel_configuration
+                if asc.Channel_configuration == 7 {
+                    track.chanelCount = 8 // ADTS configuration 7 is 7.1.
+                }
             }
             if track.sampleRate == 0 {
                 track.sampleRate = uint32(sampleRate)
