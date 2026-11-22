@@ -30,8 +30,6 @@ type H264Packer struct {
     pt       uint8
     sequence uint16
     stap_a   bool
-    sps      []byte
-    pps      []byte
 }
 
 func NewH264Packer(pt uint8, ssrc uint32, sequence uint16, mtu int) *H264Packer {
@@ -48,46 +46,54 @@ func (pack *H264Packer) EnableStapA() {
     pack.stap_a = true
 }
 
-func (pack *H264Packer) Pack(frame []byte, timestamp uint32) (err error) {
-    codec.SplitFrame(frame, func(nalu []byte) bool {
-        if len(nalu) == 0 {
-            return true
-        }
-        if pack.stap_a {
-            switch codec.H264NaluTypeWithoutStartCode(nalu) {
-            case codec.H264_NAL_SPS:
-                return true
-            case codec.H264_NAL_PPS:
-                return true
+func (pack *H264Packer) Pack(frame []byte, timestamp uint32) error {
+    var scratch [8][]byte
+    nalus := splitRTPAccessUnit(frame, scratch[:0])
+    for i := 0; i < len(nalus); i++ {
+        nalu := nalus[i]
+        if pack.stap_a && i+1 < len(nalus) && pack.canAggregateParameterSets(nalu, nalus[i+1]) {
+            if err := pack.packStapA(nalus[i:i+2], timestamp, i+2 == len(nalus)); err != nil {
+                return err
             }
-            if pack.sps != nil && pack.pps != nil {
-                pack.packStapA([][]byte{pack.sps, pack.pps}, timestamp)
-                pack.sps = nil
-                pack.pps = nil
-            }
+            i++
+            continue
         }
+        var err error
+        last := i+1 == len(nalus)
         if len(nalu)+RTP_FIX_HEAD_LEN <= pack.mtu {
-            err = pack.packSingleNalu(nalu, timestamp)
+            err = pack.packSingleNalu(nalu, timestamp, last)
         } else if pack.mtu <= RTP_FIX_HEAD_LEN+2 {
-            err = errors.New("MTU too small for an H.264 RTP fragment")
+            return errors.New("MTU too small for an H.264 RTP fragment")
         } else {
-            err = pack.packFuA(nalu, timestamp)
+            err = pack.packFuA(nalu, timestamp, last)
         }
         if err != nil {
-            return false
+            return err
         }
-        return true
-    })
-    return err
+    }
+    return nil
 }
 
-func (pack *H264Packer) packSingleNalu(nalu []byte, timestamp uint32) error {
+func (pack *H264Packer) canAggregateParameterSets(first, second []byte) bool {
+    const stapHeaderSize = 5 // One STAP header and two uint16 lengths.
+    if len(first) > 65535 || len(second) > 65535 || RTP_FIX_HEAD_LEN+stapHeaderSize+len(first)+len(second) > pack.mtu {
+        return false
+    }
+    firstType := codec.H264NaluTypeWithoutStartCode(first)
+    secondType := codec.H264NaluTypeWithoutStartCode(second)
+    return (firstType == codec.H264_NAL_SPS && secondType == codec.H264_NAL_PPS) ||
+        (firstType == codec.H264_NAL_PPS && secondType == codec.H264_NAL_SPS)
+}
+
+func (pack *H264Packer) packSingleNalu(nalu []byte, timestamp uint32, last bool) error {
     pkg := RtpPacket{}
     pkg.Header.PayloadType = pack.pt
     pkg.Header.SSRC = pack.ssrc
     pkg.Header.SequenceNumber = pack.sequence
     pkg.Header.Timestamp = timestamp
-    pkg.Header.Marker = 1
+    if last {
+        pkg.Header.Marker = 1
+    }
     pkg.Payload = nalu
     pack.sequence++
     if pack.onRtp != nil {
@@ -125,7 +131,7 @@ func (pack *H264Packer) packSingleNalu(nalu []byte, timestamp uint32) error {
 // |S|E|R|  Type   |
 // +---------------+
 
-func (pack *H264Packer) packFuA(nalu []byte, timestamp uint32) (err error) {
+func (pack *H264Packer) packFuA(nalu []byte, timestamp uint32, last bool) (err error) {
     var fuIndicator byte = nalu[0]&0xE0 | 0x1c
     var fuHeader byte = nalu[0]&0x1F | 0x80
     nalu = nalu[1:]
@@ -136,7 +142,9 @@ func (pack *H264Packer) packFuA(nalu []byte, timestamp uint32) (err error) {
         pkg.Header.SequenceNumber = pack.sequence
         pkg.Header.Timestamp = timestamp
         if len(nalu)+RTP_FIX_HEAD_LEN+2 <= pack.mtu {
-            pkg.Header.Marker = 1
+            if last {
+                pkg.Header.Marker = 1
+            }
             fuHeader |= 0x40
             pkg.Payload = make([]byte, 0, 2+len(nalu))
             pkg.Payload = append(pkg.Payload, fuIndicator)
@@ -190,32 +198,41 @@ func (pack *H264Packer) packFuA(nalu []byte, timestamp uint32) (err error) {
 // |                               :...OPTIONAL RTP padding        |
 // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
-func (pack *H264Packer) packStapA(nalus [][]byte, timestamp uint32) error {
+func (pack *H264Packer) packStapA(nalus [][]byte, timestamp uint32, last bool) error {
     pkg := RtpPacket{}
+    pkg.Header.PayloadType = pack.pt
     pkg.Header.SSRC = pack.ssrc
     pkg.Header.SequenceNumber = pack.sequence
     pkg.Header.Timestamp = timestamp
+    if last {
+        pkg.Header.Marker = 1
+    }
 
     length := 0
+    var forbidden, nri byte
     for _, nalu := range nalus {
         length += len(nalu) + 2
+        forbidden |= nalu[0] & 0x80
+        if value := nalu[0] & 0x60; value > nri {
+            nri = value
+        }
     }
 
     pkg.Payload = make([]byte, 1, length+1)
-    pkg.Payload[0] = 24
+    pkg.Payload[0] = forbidden | nri | 24
     for _, nalu := range nalus {
-        tmp := make([]byte, 2)
-        binary.BigEndian.PutUint16(tmp, uint16(len(nalu)))
-        pkg.Payload = append(pkg.Payload, tmp...)
+        var tmp [2]byte
+        binary.BigEndian.PutUint16(tmp[:], uint16(len(nalu)))
+        pkg.Payload = append(pkg.Payload, tmp[:]...)
         pkg.Payload = append(pkg.Payload, nalu...)
     }
     if pack.onRtp != nil {
         pack.onRtp(&pkg)
     }
+    pack.sequence++
     if pack.onPacket != nil {
         return pack.onPacket(pkg.Encode())
     }
-    pack.sequence++
     return nil
 }
 

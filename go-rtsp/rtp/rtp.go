@@ -4,6 +4,8 @@ import (
     "bytes"
     "encoding/binary"
     "errors"
+
+    "github.com/yapingcat/gomedia/go-codec"
 )
 
 type RTP_HOOK_FUNC func(pkg *RtpPacket)
@@ -33,6 +35,16 @@ func (pack *CommPacker) SetMtu(mtu int) {
 
 func (pack *CommPacker) HookRtp(cb RTP_HOOK_FUNC) {
     pack.onRtp = cb
+}
+
+func splitRTPAccessUnit(frame []byte, nalus [][]byte) [][]byte {
+    codec.SplitFrame(frame, func(nalu []byte) bool {
+        if len(nalu) > 0 {
+            nalus = append(nalus, nalu)
+        }
+        return true
+    })
+    return nalus
 }
 
 type UnPacker interface {

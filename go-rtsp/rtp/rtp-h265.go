@@ -3,8 +3,6 @@ package rtp
 import (
     "bytes"
     "errors"
-
-    "github.com/yapingcat/gomedia/go-codec"
 )
 
 //h265 nalu head
@@ -52,26 +50,38 @@ func NewH265Packer(pt uint8, ssrc uint32, sequence uint16, mtu int) *H265Packer 
 }
 
 func (h265 *H265Packer) Pack(data []byte, timestamp uint32) error {
-    var err error
-    codec.SplitFrame(data, func(nalu []byte) bool {
-        if len(nalu)+RTP_FIX_HEAD_LEN < h265.mtu {
-            err = h265.packSingleNalu(nalu, timestamp)
-        } else {
-            err = h265.packFu(nalu, timestamp)
+    var scratch [8][]byte
+    nalus := splitRTPAccessUnit(data, scratch[:0])
+    for i, nalu := range nalus {
+        if len(nalu) < 2 {
+            return errors.New("truncated HEVC NAL header")
         }
-        return err == nil
-    })
-    return err
+        var err error
+        last := i+1 == len(nalus)
+        if len(nalu)+RTP_FIX_HEAD_LEN <= h265.mtu {
+            err = h265.packSingleNalu(nalu, timestamp, last)
+        } else if h265.mtu <= RTP_FIX_HEAD_LEN+3 {
+            return errors.New("MTU too small for an HEVC RTP fragment")
+        } else {
+            err = h265.packFu(nalu, timestamp, last)
+        }
+        if err != nil {
+            return err
+        }
+    }
+    return nil
 }
 
-func (h265 *H265Packer) packSingleNalu(nalu []byte, timestamp uint32) error {
+func (h265 *H265Packer) packSingleNalu(nalu []byte, timestamp uint32, last bool) error {
     //fmt.Println("pack single nalu")
     pkg := RtpPacket{}
     pkg.Header.PayloadType = h265.pt
     pkg.Header.SequenceNumber = h265.sequence
     pkg.Header.SSRC = h265.ssrc
     pkg.Header.Timestamp = timestamp
-    pkg.Header.Marker = 1
+    if last {
+        pkg.Header.Marker = 1
+    }
     pkg.Payload = make([]byte, len(nalu))
     copy(pkg.Payload, nalu)
     if h265.onRtp != nil {
@@ -84,7 +94,7 @@ func (h265 *H265Packer) packSingleNalu(nalu []byte, timestamp uint32) error {
     return nil
 }
 
-func (h265 *H265Packer) packFu(nalu []byte, timestamp uint32) error {
+func (h265 *H265Packer) packFu(nalu []byte, timestamp uint32, last bool) error {
     var payloadHdr [2]byte
     var fuHeader byte
     payloadHdr[0] = (nalu[0] & 0x81) | (0x31 << 1)
@@ -103,7 +113,9 @@ func (h265 *H265Packer) packFu(nalu []byte, timestamp uint32) error {
         if len(nalu)+RTP_FIX_HEAD_LEN+3 <= h265.mtu {
             end = true
             length = len(nalu)
-            pkg.Header.Marker = 1
+            if last {
+                pkg.Header.Marker = 1
+            }
         } else {
             length = h265.mtu - RTP_FIX_HEAD_LEN - 3
         }
