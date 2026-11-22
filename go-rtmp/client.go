@@ -184,20 +184,27 @@ func (cli *RtmpClient) Input(data []byte) error {
 	switch cli.state {
 	case HandShake:
 		cli.changeState(STATE_HANDSHAKEING)
-		cli.hs.input(data)
+		consumed, err := cli.hs.input(data)
+		if err != nil {
+			return err
+		}
 		if cli.hs.getState() != HANDSHAKE_DONE {
 			return nil
-		} else {
-			cli.changeState(STATE_RTMP_CONNECTING)
-			cli.state = ReadChunk
-			cmd := makeConnect(cli.app, cli.tcurl)
-			bufs := cli.cmdChan.writeData(cmd, Command_AMF0, 0, 0)
-			if err := cli.output(bufs); err != nil {
-				return err
-			}
-			cli.lastMethod = CONNECT
-			cli.lastMethodTid = 1
 		}
+		cli.state = ReadChunk
+		cli.lastMethod = CONNECT
+		cli.lastMethodTid = 1
+		cli.changeState(STATE_RTMP_CONNECTING)
+		cmd := makeConnect(cli.app, cli.tcurl)
+		bufs := cli.cmdChan.writeData(cmd, Command_AMF0, 0, 0)
+		if err := cli.output(bufs); err != nil {
+			return err
+		}
+		data = data[consumed:]
+		if len(data) == 0 {
+			return nil
+		}
+		fallthrough
 	case ReadChunk:
 
 		err := cli.reader.readRtmpMessage(data, func(msg *rtmpMessage) error {
@@ -212,7 +219,6 @@ func (cli *RtmpClient) Input(data []byte) error {
 	default:
 		panic("error state")
 	}
-	return nil
 }
 
 func (cli *RtmpClient) WriteFrame(cid codec.CodecID, frame []byte, pts, dts uint32) error {

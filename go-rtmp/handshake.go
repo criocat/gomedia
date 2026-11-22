@@ -5,6 +5,7 @@ import (
     "crypto/hmac"
     "crypto/sha256"
     "encoding/binary"
+    "errors"
     "math/rand"
     "time"
 )
@@ -272,7 +273,8 @@ func (chs *clientHandShake) start() {
     chs.output(c0c1)
 }
 
-func (chs *clientHandShake) input(data []byte) error {
+func (chs *clientHandShake) input(data []byte) (int, error) {
+    inputLength := len(data)
     for len(data) > 0 {
         switch chs.state {
         case CLIENT_S0:
@@ -280,40 +282,40 @@ func (chs *clientHandShake) input(data []byte) error {
             data = data[1:]
             chs.state = CLIENT_S1
         case CLIENT_S1:
-            if len(data)+len(chs.cache) < 1536 {
+            length := HANDSHAKE_SIZE - len(chs.cache)
+            if len(data) < length {
                 chs.cache = append(chs.cache, data...)
-                return nil
-            } else {
-                length := 1536 - len(chs.cache)
-                chs.cache = append(chs.cache, data[:length]...)
-                data = data[length:]
+                return inputLength, nil
             }
+            chs.cache = append(chs.cache, data[:length]...)
+            data = data[length:]
             var c2 []byte
             if chs.simpleHs {
                 c2 = makeC2(chs.cache)
             } else {
                 c2 = makeComplexC2(chs.cache, chs.schema)
             }
-            chs.output(c2)
             chs.cache = chs.cache[:0]
             chs.state = CLIENT_S2
+            if err := chs.output(c2); err != nil {
+                return inputLength - len(data), err
+            }
         case CLIENT_S2:
-            if len(data)+len(chs.cache) < 1536 {
+            length := HANDSHAKE_SIZE - len(chs.cache)
+            if len(data) < length {
                 chs.cache = append(chs.cache, data...)
-                return nil
-            } else {
-                length := 1536 - len(chs.cache)
-                chs.cache = append(chs.cache, data[:length]...)
-                data = data[length:]
+                return inputLength, nil
             }
             chs.state = HANDSHAKE_DONE
             chs.cache = nil
+            return inputLength - len(data) + length, nil
+        case HANDSHAKE_DONE:
+            return inputLength - len(data), nil
         default:
-            panic("error state")
+            return inputLength - len(data), errors.New("invalid RTMP client handshake state")
         }
     }
-
-    return nil
+    return inputLength, nil
 }
 
 func (chs *clientHandShake) getState() HandShakeState {
