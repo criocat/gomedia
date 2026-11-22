@@ -178,12 +178,11 @@ func (ctx *RtcpContext) getReportBlock() ReportBlock {
     ctx.expectPrior = expected
     receivedInterval := ctx.received - ctx.receivedPrior
     ctx.receivedPrior = ctx.received
-    lostInterval := expectedInterval - receivedInterval
-    fraction := uint32(0)
-    if expectedInterval == 0 || lostInterval < 0 {
-        fraction = 0
-    } else {
-        fraction = (lostInterval << 8) / expectedInterval
+    var fraction uint8
+    // Duplicates can make the received count exceed the expected count.
+    if receivedInterval < expectedInterval {
+        lostInterval := expectedInterval - receivedInterval
+        fraction = uint8((uint64(lostInterval) << 8) / uint64(expectedInterval))
     }
 
     delay := time.Now().UnixNano()/1000 - int64(ctx.srClockTime)
@@ -191,7 +190,7 @@ func (ctx *RtcpContext) getReportBlock() ReportBlock {
     dlsr := uint32(float32(delay) / 1000000 * 65536)
 
     rb.Lost = lost
-    rb.Fraction = uint8(fraction)
+    rb.Fraction = fraction
     rb.ExtendHighestSeq = extendMax
     rb.Lsr = lsr
     rb.Dlsr = dlsr

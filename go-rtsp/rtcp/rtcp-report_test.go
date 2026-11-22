@@ -32,6 +32,29 @@ func TestReceiverReportJitterWithReorderedTimestamps(t *testing.T) {
 	}
 }
 
+func TestReceiverReportDoesNotCountDuplicatesAsLoss(t *testing.T) {
+	ctx := NewRtcpContext(1, 41, 90000)
+	receive := func(seq uint16) {
+		ctx.ReceivedRtp(&rtp.RtpPacket{Header: rtp.RtpHdr{SequenceNumber: seq, Timestamp: uint32(seq) * 3000}})
+	}
+	receive(41)
+	receive(42)
+	ctx.GenerateRR()
+
+	receive(43)
+	receive(44)
+	receive(44)
+	if got := ctx.GenerateRR().Blocks[0].Fraction; got != 0 {
+		t.Errorf("fraction reported as lost with a duplicate = %d/256, want 0", got)
+	}
+
+	// The following interval has a genuine gap at sequence number 45.
+	receive(46)
+	if got := ctx.GenerateRR().Blocks[0].Fraction; got != 128 {
+		t.Errorf("fraction reported as lost with one of two missing = %d/256, want 128/256", got)
+	}
+}
+
 func TestSenderReportDecodesEachReportBlock(t *testing.T) {
 	sent := NewSenderReport()
 	sent.RC = 2
