@@ -201,6 +201,7 @@ func decodeTrunBox(demuxer *MovDemuxer, size uint32) (err error) {
         nextDts += uint64(delta)
         demuxer.currentTrack.samplelist = append(demuxer.currentTrack.samplelist, sample)
     }
+    demuxer.currentTrack.startDts = nextDts
     demuxer.dataOffset = uint32(dataOffset)
     return
 }

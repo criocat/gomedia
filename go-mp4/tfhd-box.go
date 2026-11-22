@@ -173,7 +173,9 @@ func makeTfhdBox(track *mp4track, offset uint64) []byte {
         tfhd.DefaultSampleDuration = uint32(track.samplelist[0].dts - track.fragments[len(track.fragments)-1].lastDts)
     } else {
         tfhd.DefaultSampleDuration = 0
-        tfFlags |= TF_FLAG_DURATION_IS_EMPTY
+        if len(track.samplelist) == 0 {
+            tfFlags |= TF_FLAG_DURATION_IS_EMPTY
+        }
     }
     if len(track.samplelist) > 0 {
         tfFlags |= TF_FLAG_DEAAULT_SAMPLE_FLAGS_PRESENT
