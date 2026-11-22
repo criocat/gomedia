@@ -109,8 +109,13 @@ func (mux *TSMuxer) Write(pid uint16, data []byte, pts uint64, dts uint64) error
     if whichpmt == nil || whichstream == nil {
         return errors.New("not Found pid stream")
     }
+    oldPCRPID := whichpmt.pcr_pid
     if whichpmt.pcr_pid == 0 || (findPESIDByStreamType(whichstream.streamtype) == PES_STREAM_VIDEO && whichpmt.pcr_pid != pid) {
         whichpmt.pcr_pid = pid
+    }
+    pcrPIDChanged := oldPCRPID != 0 && whichpmt.pcr_pid != oldPCRPID
+    if pcrPIDChanged {
+        whichpmt.version_number = (whichpmt.version_number + 1) & 0x1f
     }
 
     var withaud bool = false
@@ -139,7 +144,7 @@ func (mux *TSMuxer) Write(pid uint16, data []byte, pts uint64, dts uint64) error
         })
     }
 
-    if mux.pat_period == 0 || mux.pat_period+400 < dts {
+    if pcrPIDChanged || mux.pat_period == 0 || mux.pat_period+400 < dts {
         mux.pat_period = dts
         if mux.pat_period == 0 {
             mux.pat_period = 1 //avoid write pat twice
