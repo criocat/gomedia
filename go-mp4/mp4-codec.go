@@ -40,7 +40,7 @@ func getCodecNameWithCodecId(cid MP4_CODEC_TYPE) [4]byte {
     case MP4_CODEC_G711U:
         return [4]byte{'u', 'l', 'a', 'w'}
     case MP4_CODEC_OPUS:
-        return [4]byte{'o', 'p', 'u', 's'}
+        return [4]byte{'O', 'p', 'u', 's'}
     default:
         panic("unsupport codec id")
     }
