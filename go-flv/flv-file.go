@@ -317,7 +317,19 @@ func (f *FlvWriter) WriteAAC(data []byte, pts uint32, dts uint32) error {
             panic("audio codec change")
         }
     }
-    return f.writeAudio(data, pts, dts)
+    return f.muxer.writeFrames(AUDIO_TAG, data, pts, dts, func(tag []byte) error {
+        var size [4]byte
+        binary.BigEndian.PutUint32(size[:], uint32(len(tag)))
+        tag = append(tag, size[:]...)
+        n, err := f.writer.Write(tag)
+        if err != nil {
+            return err
+        }
+        if n != len(tag) {
+            return io.ErrShortWrite
+        }
+        return nil
+    })
 }
 
 func (f *FlvWriter) WriteG711A(data []byte, pts uint32, dts uint32) error {

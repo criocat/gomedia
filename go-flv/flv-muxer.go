@@ -211,18 +211,45 @@ func NewAACMuxer() *AACMuxer {
 
 func (muxer *AACMuxer) Write(frames []byte, pts uint32, dts uint32) [][]byte {
     var tags [][]byte
+    _ = muxer.write(frames, dts, func(tag []byte, _ uint32) error {
+        tags = append(tags, tag)
+        return nil
+    })
+    return tags
+}
+
+func (muxer *AACMuxer) write(frames []byte, dts uint32, output func([]byte, uint32) error) error {
+    // This clock is divisible by every ADTS sample rate, so changing sample
+    // rates within a batch does not discard fractional milliseconds.
+    const aacClock = 28224000
+    var elapsedTicks uint64
+    var writeErr error
     codec.SplitAACFrame(frames, func(aac []byte) {
+        if writeErr != nil {
+            return
+        }
         asc, err := codec.ConvertADTSToASC(aac)
         if err != nil {
             return
         }
+        index := int(asc.Sample_freq_index)
+        if index >= len(codec.AAC_Sampling_Idx) {
+            writeErr = errors.New("invalid AAC ADTS sampling frequency")
+            return
+        }
+        timestamp := dts + uint32(elapsedTicks/(aacClock/1000))
         if muxer.config != *asc {
-            tags = append(tags, WriteAudioTag(asc.Encode(), FLV_AAC, 0, 0, true))
+            writeErr = output(WriteAudioTag(asc.Encode(), FLV_AAC, 0, 0, true), timestamp)
+            if writeErr != nil {
+                return
+            }
             muxer.config = *asc
         }
-        tags = append(tags, WriteAudioTag(aac[7:], FLV_AAC, 0, 0, false))
+        writeErr = output(WriteAudioTag(aac[7:], FLV_AAC, 0, 0, false), timestamp)
+        samples := (uint64(aac[6]&0x03) + 1) * 1024
+        elapsedTicks += samples * (aacClock / uint64(codec.AACSampleIdxToSample(index)))
     })
-    return tags
+    return writeErr
 }
 
 type G711AMuxer struct {
@@ -321,27 +348,43 @@ func (muxer *FlvMuxer) WriteAudio(frames []byte, pts uint32, dts uint32) ([][]by
 }
 
 func (muxer *FlvMuxer) WriteFrames(frameType TagType, frames []byte, pts uint32, dts uint32) ([][]byte, error) {
+    tags := make([][]byte, 0, 1)
+    err := muxer.writeFrames(frameType, frames, pts, dts, func(tag []byte) error {
+        tags = append(tags, tag)
+        return nil
+    })
+    if err != nil && len(tags) == 0 {
+        return nil, err
+    }
+    return tags, err
+}
 
-    var ftag FlvTag
+func (muxer *FlvMuxer) writeFrames(frameType TagType, frames []byte, pts uint32, dts uint32, output func([]byte) error) error {
+    writeTag := func(tag []byte, timestamp uint32) error {
+        ftag := FlvTag{
+            TagType: uint8(frameType),
+            DataSize: uint32(len(tag)),
+            Timestamp: timestamp & 0x00FFFFFF,
+            TimestampExtended: uint8(timestamp >> 24),
+        }
+        return output(append(ftag.Encode(), tag...))
+    }
     var tags [][]byte
     if frameType == AUDIO_TAG {
-        ftag.TagType = uint8(AUDIO_TAG)
+        if aac, ok := muxer.audioMuxer.(*AACMuxer); ok {
+            return aac.write(frames, dts, writeTag)
+        }
         tags = muxer.audioMuxer.Write(frames, pts, dts)
     } else if frameType == VIDEO_TAG {
-        ftag.TagType = uint8(VIDEO_TAG)
         tags = muxer.videoMuxer.Write(frames, pts, dts)
     } else {
-        return nil, errors.New("unsupport Frame Type")
+        return errors.New("unsupport Frame Type")
     }
-    ftag.Timestamp = dts & 0x00FFFFFF
-    ftag.TimestampExtended = uint8(dts >> 24 & 0xFF)
 
-    tmptags := make([][]byte, 0, 1)
     for _, tag := range tags {
-        ftag.DataSize = uint32(len(tag))
-        vtag := ftag.Encode()
-        vtag = append(vtag, tag...)
-        tmptags = append(tmptags, vtag)
+        if err := writeTag(tag, dts); err != nil {
+            return err
+        }
     }
-    return tmptags, nil
+    return nil
 }
