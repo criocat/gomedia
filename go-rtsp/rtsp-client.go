@@ -418,24 +418,34 @@ func (client *RtspClient) handleDescribe(res *RtspResponse) (err error) {
         baseUrl = baseUrl[:len(baseUrl)-1]
     }
 
-    getControlUrl := func(url string) string {
-        if url == "*" {
-            return baseUrl
-        } else if !strings.HasPrefix(url, "rtsp://") {
-            if strings.HasPrefix(url, "/") {
-                return baseUrl + url
-            } else {
-                return baseUrl + "/" + url
-            }
-        } else {
-            return url
+    getControlURL := func(control string) (string, error) {
+        if control == "*" {
+            return baseUrl, nil
         }
+        if strings.HasPrefix(control, "rtsp://") {
+            return control, nil
+        }
+        if !strings.HasPrefix(control, "/") {
+            return baseUrl + "/" + control, nil
+        }
+        base, err := url.Parse(baseUrl)
+        if err != nil {
+            return "", err
+        }
+        ref, err := url.Parse(control)
+        if err != nil {
+            return "", err
+        }
+        return base.ResolveReference(ref).String(), nil
     }
 
     if client.sdpContext.ControlUrl == "" {
         return errors.New("unsupport empty aggregate control url in session level descriptions")
     }
-    client.sdpContext.ControlUrl = getControlUrl(client.sdpContext.ControlUrl)
+    client.sdpContext.ControlUrl, err = getControlURL(client.sdpContext.ControlUrl)
+    if err != nil {
+        return err
+    }
     for _, media := range client.sdpContext.Medias {
         fmtpHandle := sdp.CreateFmtpParamParser(media.EncodeName)
         if fmtpHandle != nil {
@@ -454,7 +464,10 @@ func (client *RtspClient) handleDescribe(res *RtspResponse) (err error) {
         }
         track.OpenTrack()
         client.tracks[media.MediaType] = track
-        media.ControlUrl = getControlUrl(media.ControlUrl)
+        media.ControlUrl, err = getControlURL(media.ControlUrl)
+        if err != nil {
+            return err
+        }
     }
 
     if client.handle != nil {
@@ -486,7 +499,8 @@ func (client *RtspClient) handleDescribe(res *RtspResponse) (err error) {
 
 func (client *RtspClient) handleSetup(res *RtspResponse) error {
 
-    lastTrack := client.tracks[client.sdpContext.Medias[client.setupStep-1].MediaType]
+    lastMedia := client.sdpContext.Medias[client.setupStep-1]
+    lastTrack := client.tracks[lastMedia.MediaType]
     if res.StatusCode != 200 {
         if client.handle == nil {
             return nil
@@ -495,7 +509,7 @@ func (client *RtspClient) handleSetup(res *RtspResponse) error {
         err := client.handle.HandleSetup(client, *res, lastTrack, client.tracks, "", -1)
         if res.StatusCode == 461 {
             if lastTrack.transport.Proto != proto {
-                req := makeSetup(client.sdpContext.Medias[client.setupStep].ControlUrl, client.cseq)
+                req := makeSetup(lastMedia.ControlUrl, client.cseq)
                 if lastTrack.transport.Proto == TCP && lastTrack.transport.Interleaved[0] == lastTrack.transport.Interleaved[1] {
                     lastTrack.transport.Interleaved[0] = client.setupStep * 2
                     lastTrack.transport.Interleaved[1] = client.setupStep*2 + 1

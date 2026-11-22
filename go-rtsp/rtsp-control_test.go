@@ -108,3 +108,65 @@ func TestClientDeliversServerKeepAlive(t *testing.T) {
 		t.Errorf("unexpected callback request: %+v", got)
 	}
 }
+
+func TestClientResolvesSDPControlPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		control string
+		uri     string
+	}{
+		{"relative", "audio", "rtsp://localhost/source/audio"},
+		{"absolute_path", "/alternate/audio", "rtsp://localhost/alternate/audio"},
+		{"absolute_uri", "rtsp://localhost/alternate/audio", "rtsp://localhost/alternate/audio"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, sent := startControlTestClient(t, &controlTestClient{}, controlTestSDP+"a=control:"+test.control+"\r\n")
+			got := strings.SplitN((*sent)[2], "\r\n", 2)[0]
+			if want := "SETUP " + test.uri + " RTSP/1.0"; got != want {
+				t.Errorf("got %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+type udpFallbackTestClient struct{ controlTestClient }
+
+func (*udpFallbackTestClient) HandleSetup(_ *RtspClient, res RtspResponse, track *RtspTrack, _ map[string]*RtspTrack, _ string, _ int) error {
+	if res.StatusCode == Unsupported_Transport {
+		track.SetTransport(NewRtspTransport(WithEnableUdp(), WithClientUdpPort(5000, 5001)))
+	}
+	return nil
+}
+
+func TestClientRetriesSetupForSameTrack(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		extraMedia string
+	}{
+		{"single_track", ""},
+		{"two_tracks", "m=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=control:video\r\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client, sent := startControlTestClient(t, &udpFallbackTestClient{}, controlTestSDP+"a=control:audio\r\n"+test.extraMedia)
+			feedControlMessage(t, client, "RTSP/1.0 461 Unsupported Transport\r\nCSeq: 3\r\n\r\n")
+			if len(*sent) != 4 {
+				t.Fatalf("expected SETUP retry, got %q", *sent)
+			}
+			retry := (*sent)[3]
+			if !strings.HasPrefix(retry, "SETUP rtsp://localhost/source/audio RTSP/1.0\r\n") ||
+				!strings.Contains(retry, "\r\nTransport: RTP/AVP/UDP;") {
+				t.Fatalf("expected UDP SETUP for audio, got %q", retry)
+			}
+			feedControlMessage(t, client, "RTSP/1.0 200 OK\r\nCSeq: 4\r\nSession: 12345678\r\n"+
+				"Transport: RTP/AVP/UDP;unicast;client_port=5000-5001;server_port=6000-6001\r\n\r\n")
+			want := "PLAY rtsp://localhost/source RTSP/1.0\r\n"
+			if test.extraMedia != "" {
+				want = "SETUP rtsp://localhost/source/video RTSP/1.0\r\n"
+			}
+			if len(*sent) != 5 || !strings.HasPrefix((*sent)[4], want) {
+				t.Errorf("expected %q after successful retry, got %q", want, *sent)
+			}
+		})
+	}
+}
