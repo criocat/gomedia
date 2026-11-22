@@ -29,12 +29,24 @@ func (pkt *Comm) Decode(data []byte) error {
     }
     pkt.PT = data[1]
     pkt.Length = binary.BigEndian.Uint16(data[2:])
-    pkt.PayloadLen = pkt.Length * 4
-    if pkt.Padding {
-        paddingLen := data[pkt.Length*4-1]
-        pkt.PayloadLen = pkt.Length*4 - uint16(paddingLen)
-        pkt.PaddingData = data[pkt.Length*4-uint16(paddingLen):]
+    payloadLength := int(pkt.Length) * 4
+    packetEnd := 4 + payloadLength
+    if packetEnd > len(data) {
+        return errors.New("incomplete RTCP packet")
     }
+    pkt.PaddingData = nil
+    if pkt.Padding {
+        paddingLen := int(data[packetEnd-1])
+        if paddingLen == 0 || paddingLen > payloadLength {
+            return errors.New("invalid RTCP padding length")
+        }
+        payloadLength -= paddingLen
+        pkt.PaddingData = data[packetEnd-paddingLen : packetEnd-1]
+    }
+    if payloadLength > 65535 {
+        return errors.New("RTCP payload too large")
+    }
+    pkt.PayloadLen = uint16(payloadLength)
     return nil
 }
 

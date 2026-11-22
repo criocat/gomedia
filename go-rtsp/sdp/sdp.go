@@ -39,6 +39,9 @@ func (r *RtpMap) Decode(rtpmap string) error {
         return nil
     }
     param := strings.Split(items[1], "/")
+    if len(param) < 2 {
+        return errors.New("incomplete SDP rtpmap")
+    }
     r.EncodeName = param[0]
     r.ClockRate, _ = strconv.Atoi(param[1])
     if len(param) > 2 {
@@ -215,32 +218,38 @@ func (sdp *Sdp) ParserSdp(sdpContent string) error {
                     sdp.Attrs = make(map[string]string)
                 }
                 sdp.Attrs[attrName] = attrValue
-            } else {
-                if sdp.Medias[len(sdp.Medias)-1].Attrs == nil {
-                    sdp.Medias[len(sdp.Medias)-1].Attrs = make(map[string]string)
-                }
-                sdp.Medias[len(sdp.Medias)-1].Attrs[attrName] = attrValue
-            }
-            switch attrName {
-            case "rtpmap":
-                rtpMap := &RtpMap{}
-                rtpMap.Decode(attrValue)
-                sdp.Medias[len(sdp.Medias)-1].EncodeName = rtpMap.EncodeName
-                sdp.Medias[len(sdp.Medias)-1].ClockRate = rtpMap.ClockRate
-                if len(sdp.Medias[len(sdp.Medias)-1].Fmts) > 0 &&
-                    sdp.Medias[len(sdp.Medias)-1].Fmts[0] == uint8(rtpMap.PayloadType) {
-                    sdp.Medias[len(sdp.Medias)-1].PayloadType = rtpMap.PayloadType
-                }
-                if rtpMap.EncodParam != "" && sdp.Medias[len(sdp.Medias)-1].MediaType == "audio" {
-                    sdp.Medias[len(sdp.Medias)-1].ChannelCount, _ = strconv.Atoi(rtpMap.EncodParam)
-                }
-            case "control":
-                if len(sdp.Medias) == 0 {
+                if attrName == "control" {
                     sdp.ControlUrl = attrValue
-                } else {
-                    sdp.Medias[len(sdp.Medias)-1].ControlUrl = attrValue
                 }
+                continue
             }
+
+            media := sdp.Medias[len(sdp.Medias)-1]
+            if attrName == "rtpmap" || attrName == "fmtp" {
+                fields := strings.SplitN(attrValue, " ", 2)
+                payloadType, err := strconv.Atoi(fields[0])
+                if err != nil || len(media.Fmts) == 0 || payloadType != int(media.Fmts[0]) {
+                    continue
+                }
+                if attrName == "rtpmap" {
+                    var rtpMap RtpMap
+                    if err := rtpMap.Decode(attrValue); err != nil {
+                        return err
+                    }
+                    media.PayloadType = rtpMap.PayloadType
+                    media.EncodeName = rtpMap.EncodeName
+                    media.ClockRate = rtpMap.ClockRate
+                    if media.MediaType == "audio" && rtpMap.EncodParam != "" {
+                        media.ChannelCount, _ = strconv.Atoi(rtpMap.EncodParam)
+                    }
+                }
+            } else if attrName == "control" {
+                media.ControlUrl = attrValue
+            }
+            if media.Attrs == nil {
+                media.Attrs = make(map[string]string)
+            }
+            media.Attrs[attrName] = attrValue
         case 'm':
             m := &Media{}
             if err := m.ParseMLine(string(value)); err != nil {
