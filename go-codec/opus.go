@@ -349,58 +349,75 @@ type OpusContext struct {
 // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 //
 func (ctx *OpusContext) ParseExtranData(extraData []byte) error {
+    if len(extraData) < 19 {
+        return errors.New("incomplete OpusHead")
+    }
     if string(extraData[0:8]) != "OpusHead" {
         return errors.New("magic signature must equal OpusHead")
     }
 
-    _ = extraData[8] // version
-    ctx.ChannelCount = int(extraData[9])
-    ctx.Preskip = int(binary.LittleEndian.Uint16(extraData[10:]))
-    ctx.SampleRate = int(binary.LittleEndian.Uint32(extraData[12:]))
-    ctx.OutputGain = binary.LittleEndian.Uint16(extraData[16:])
-    ctx.MapType = extraData[18]
+    parsed := OpusContext{
+        ChannelCount: int(extraData[9]),
+        Preskip:      int(binary.LittleEndian.Uint16(extraData[10:])),
+        SampleRate:   int(binary.LittleEndian.Uint32(extraData[12:])),
+        OutputGain:   binary.LittleEndian.Uint16(extraData[16:]),
+        MapType:      extraData[18],
+    }
+    if parsed.ChannelCount == 0 {
+        return errors.New("OpusHead has no channels")
+    }
     var channel []byte
-    var order ChannelOrder
-    if ctx.MapType == 0 {
-        ctx.StreamCount = 1
-        ctx.StereoStreamCount = ctx.ChannelCount - 1
+    var order ChannelOrder = defalutOrder
+    switch parsed.MapType {
+    case 0:
+        if parsed.ChannelCount > 2 {
+            return errors.New("Opus mapping family 0 supports up to two channels")
+        }
+        parsed.StreamCount = 1
+        parsed.StereoStreamCount = parsed.ChannelCount - 1
         channel = []byte{0, 1}
-        order = defalutOrder
-    } else if ctx.MapType == 1 || ctx.MapType == 2 || ctx.MapType == 255 {
-        ctx.StreamCount = int(extraData[19])
-        ctx.StereoStreamCount = int(extraData[20])
-        if ctx.MapType == 1 {
-            channel = extraData[21 : 21+ctx.ChannelCount]
+    case 1, 2, 255:
+        if len(extraData) < 21+parsed.ChannelCount {
+            return errors.New("incomplete Opus channel mapping")
+        }
+        parsed.StreamCount = int(extraData[19])
+        parsed.StereoStreamCount = int(extraData[20])
+        if parsed.StreamCount == 0 || parsed.StereoStreamCount > parsed.StreamCount ||
+            parsed.StreamCount+parsed.StereoStreamCount > 255 {
+            return errors.New("invalid Opus stream counts")
+        }
+        channel = extraData[21 : 21+parsed.ChannelCount]
+        if parsed.MapType == 1 {
+            if parsed.ChannelCount > len(vorbisChanLayoutOffset) {
+                return errors.New("Opus mapping family 1 supports up to eight channels")
+            }
             order = vorbisOrder
         }
-    } else {
-        return errors.New("unsupport map type 255")
-    }
-    if len(channel) > 0 {
-        ctx.Channel = make([]byte, len(channel))
-        copy(ctx.Channel, channel)
+    default:
+        return errors.New("unsupported Opus channel mapping family")
     }
 
-    channelMaps := make([]ChannelMap, 0, ctx.ChannelCount)
-    for i := 0; i < ctx.ChannelCount; i++ {
+    parsed.Channel = append([]byte(nil), channel...)
+    channelMaps := make([]ChannelMap, 0, parsed.ChannelCount)
+    for i := 0; i < parsed.ChannelCount; i++ {
         cm := ChannelMap{}
-        index := channel[order(ctx.ChannelCount, i)]
+        index := channel[order(parsed.ChannelCount, i)]
         if index == 255 {
             channelMaps = append(channelMaps, ChannelMap{Silence: true})
             continue
-        } else if index > byte(ctx.StereoStreamCount)+byte(ctx.StreamCount) {
-            return errors.New("index must < (streamcount + stereo streamcount)")
+        } else if int(index) >= parsed.StreamCount+parsed.StereoStreamCount {
+            return errors.New("Opus channel index exceeds the decoded channel count")
         }
 
         for j := 0; j < i; j++ {
-            if channel[order(ctx.ChannelCount, j)] == index {
+            if channel[order(parsed.ChannelCount, j)] == index {
                 cm.Copy = true
                 cm.CopyFrom = j
                 break
             }
         }
 
-        if int(index) < 2*ctx.StereoStreamCount {
+        if int(index) < 2*parsed.StereoStreamCount {
             cm.StreamIdx = int(index) / 2
             if index&1 == 0 {
                 cm.ChannelIdx = LEFT_CHANNEL
@@ -408,12 +425,13 @@ func (ctx *OpusContext) ParseExtranData(extraData []byte) error {
                 cm.ChannelIdx = RIGHT_CHANNEL
             }
         } else {
-            cm.StreamIdx = int(index) - ctx.StereoStreamCount
+            cm.StreamIdx = int(index) - parsed.StereoStreamCount
             cm.ChannelIdx = 0
         }
         channelMaps = append(channelMaps, cm)
     }
-    ctx.ChannelMaps = channelMaps
+    parsed.ChannelMaps = channelMaps
+    *ctx = parsed
 
     return nil
 }
@@ -425,6 +443,12 @@ func (ctx *OpusContext) WriteOpusExtraData() []byte {
     extraData[9] = byte(ctx.ChannelCount)
     binary.LittleEndian.PutUint16(extraData[10:], uint16(ctx.Preskip))
     binary.LittleEndian.PutUint32(extraData[12:], uint32(ctx.SampleRate))
+    binary.LittleEndian.PutUint16(extraData[16:], ctx.OutputGain)
+    extraData[18] = ctx.MapType
+    if ctx.MapType != 0 {
+        extraData = append(extraData, byte(ctx.StreamCount), byte(ctx.StereoStreamCount))
+        extraData = append(extraData, ctx.Channel...)
+    }
     return extraData
 }
 
