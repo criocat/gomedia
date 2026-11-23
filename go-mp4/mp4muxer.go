@@ -3,6 +3,7 @@ package mp4
 import (
     "encoding/binary"
     "errors"
+    "fmt"
     "io"
 )
 
@@ -172,6 +173,9 @@ func (muxer *Movmuxer) addTrack(cid MP4_CODEC_TYPE, options ...TrackOption) uint
 
 func (muxer *Movmuxer) Write(track uint32, data []byte, pts uint64, dts uint64) error {
     mp4track := muxer.tracks[track]
+    if mp4track == nil {
+        return fmt.Errorf("unknown MP4 track %d", track)
+    }
     err := mp4track.writeSample(data, pts, dts)
     if err != nil {
         return err
@@ -348,6 +352,9 @@ func (muxer *Movmuxer) writeMfra() (err error) {
 }
 
 func (muxer *Movmuxer) FlushFragment() (err error) {
+    if !muxer.movFlag.isFragment() && !muxer.movFlag.isDash() {
+        return errors.New("FlushFragment requires fragmented MP4 or DASH mode")
+    }
     for _, track := range muxer.tracks {
         track.flush()
     }
