@@ -4,6 +4,7 @@ import (
     "bytes"
     "encoding/binary"
     "io"
+    "math"
 )
 
 // mp4EpochOffset is the number of seconds from 1904-01-01 UTC to the Unix epoch.
@@ -61,7 +62,10 @@ func (box *BasicBox) Decode(r io.Reader) (int, error) {
     nn := 8
     if boxsize == 1 {
         if n, err := io.ReadFull(r, buf[8:]); err != nil {
-            return n, err
+            if err == io.EOF {
+                err = io.ErrUnexpectedEOF
+            }
+            return nn + n, err
         }
         box.Size = binary.BigEndian.Uint64(buf[nn:])
         nn += 8
@@ -71,6 +75,9 @@ func (box *BasicBox) Decode(r io.Reader) (int, error) {
     if bytes.Equal(box.Type[:], []byte("uuid")) {
         uuid := make([]byte, 16)
         if n, err := io.ReadFull(r, uuid); err != nil {
+            if err == io.EOF {
+                err = io.ErrUnexpectedEOF
+            }
             return n + nn, err
         }
         copy(box.UserType[:], uuid[:])
@@ -81,7 +88,7 @@ func (box *BasicBox) Decode(r io.Reader) (int, error) {
 }
 
 func (box *BasicBox) Encode() (int, []byte) {
-    extendedSize := box.Size > 0xFFFFFFFF
+    extendedSize := box.Size > math.MaxUint32
     hasUserType := bytes.Equal(box.Type[:], []byte("uuid"))
     sizeHeaderLen := BasicBoxLen
     if extendedSize {
@@ -170,6 +177,10 @@ func (box *FullBox) decodeCountedPayload(r io.Reader, size uint32) (int, []byte,
 func (box *FullBox) Encode() (int, []byte) {
     box.Box.Size = box.Size()
     offset, buf := box.Box.Encode()
+    if box.Box.Size > math.MaxUint32 {
+        // BasicBox.Encode returns only the basic header for extended sizes.
+        buf = append(buf, 0, 0, 0, 0)
+    }
     buf[offset] = box.Version
     copy(buf[offset+1:], box.Flags[:])
     return offset + 4, buf

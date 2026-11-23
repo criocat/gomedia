@@ -3,6 +3,8 @@ package mp4
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"io"
 	"testing"
 )
 
@@ -32,5 +34,34 @@ func TestBasicBoxEncodesUserTypeWithExtendedSize(t *testing.T) {
 	var decoded BasicBox
 	if got, err := decoded.Decode(bytes.NewReader(wire)); err != nil || got != headerSize || decoded != *box {
 		t.Errorf("decoded box = %+v, bytes = %d, error = %v, want %+v", decoded, got, err, *box)
+	}
+}
+
+func TestBasicBoxReportsTruncatedExtendedHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		wire []byte
+	}{
+		{"missing size", []byte{0, 0, 0, 1, 'm', 'd', 'a', 't'}},
+		{"partial size", []byte{0, 0, 0, 1, 'm', 'd', 'a', 't', 0, 0, 0, 1}},
+		{"missing UUID", []byte{0, 0, 0, 24, 'u', 'u', 'i', 'd'}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var box BasicBox
+			if n, err := box.Decode(bytes.NewReader(tc.wire)); n != len(tc.wire) || !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Errorf("decoded %d bytes with %v, want %d and unexpected EOF", n, err, len(tc.wire))
+			}
+		})
+	}
+}
+
+func TestFullBoxEncodesVersionAndFlagsAfterExtendedSize(t *testing.T) {
+	box := NewFullBox([4]byte{'t', 'e', 's', 't'}, 1)
+	box.Box.Size = 1<<32 + 1024
+	box.Flags = [3]byte{0x12, 0x34, 0x56}
+	headerSize, wire := box.Encode()
+	want := []byte{0, 0, 0, 1, 't', 'e', 's', 't', 0, 0, 0, 1, 0, 0, 4, 0, 1, 0x12, 0x34, 0x56}
+	if headerSize != len(want) || !bytes.Equal(wire, want) {
+		t.Errorf("header size = %d, bytes = %x, want %d and %x", headerSize, wire, len(want), want)
 	}
 }
