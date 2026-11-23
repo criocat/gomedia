@@ -87,13 +87,8 @@ func (psdemuxer *PSDemuxer) Input(data []byte) error {
             if psdemuxer.pkg.Psm == nil {
                 psdemuxer.pkg.Psm = new(Program_stream_map)
             }
-            if ret = psdemuxer.pkg.Psm.Decode(bs); ret == nil {
-                for _, streaminfo := range psdemuxer.pkg.Psm.Stream_map {
-                    if _, found := psdemuxer.streamMap[streaminfo.Elementary_stream_id]; !found {
-                        stream := newpsstream(streaminfo.Elementary_stream_id, PS_STREAM_TYPE(streaminfo.Stream_type))
-                        psdemuxer.streamMap[stream.sid] = stream
-                    }
-                }
+            if ret = psdemuxer.pkg.Psm.Decode(bs); ret == nil && psdemuxer.pkg.Psm.Current_next_indicator == 1 {
+                psdemuxer.updateStreams(psdemuxer.pkg.Psm)
             }
             if psdemuxer.OnPacket != nil {
                 psdemuxer.OnPacket(psdemuxer.pkg.Psm, ret)
@@ -168,16 +163,34 @@ func (psdemuxer *PSDemuxer) decodeSystemHeader(bs *codec.BitStream) error {
     return err
 }
 
+func (psdemuxer *PSDemuxer) updateStreams(psm *Program_stream_map) {
+    for _, info := range psm.Stream_map {
+        sid := info.Elementary_stream_id
+        cid := PS_STREAM_TYPE(info.Stream_type)
+        if stream := psdemuxer.streamMap[sid]; stream != nil {
+            if stream.cid == cid {
+                continue
+            }
+            psdemuxer.flushStream(stream)
+        }
+        psdemuxer.streamMap[sid] = newpsstream(sid, cid)
+    }
+}
+
+func (psdemuxer *PSDemuxer) flushStream(stream *psstream) {
+    if len(stream.streamBuf) == 0 {
+        return
+    }
+    frame := stream.streamBuf
+    stream.streamBuf = nil
+    if psdemuxer.OnFrame != nil {
+        psdemuxer.OnFrame(frame, stream.cid, stream.pts/90, stream.dts/90)
+    }
+}
+
 func (psdemuxer *PSDemuxer) Flush() {
     for _, stream := range psdemuxer.streamMap {
-        if len(stream.streamBuf) == 0 {
-            continue
-        }
-        frame := stream.streamBuf
-        stream.streamBuf = nil
-        if psdemuxer.OnFrame != nil {
-            psdemuxer.OnFrame(frame, stream.cid, stream.pts/90, stream.dts/90)
-        }
+        psdemuxer.flushStream(stream)
     }
 }
 
