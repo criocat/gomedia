@@ -213,10 +213,14 @@ func (pkg *PesPacket) Decode(bs *codec.BitStream) error {
     loc := bs.DistanceFromMarkDot()
     bs.SkipBits(int(pkg.PES_header_data_length)*8 - loc) // skip remaining header
 
-    // the -3 bytes are the combined lengths
-    // of all fields between PES_packet_length and PES_header_data_length (2 bytes)
-    // and the PES_header_data_length itself (1 byte)
-    dataLen := int(pkg.PES_packet_length - 3 - uint16(pkg.PES_header_data_length))
+    // An unbounded video PES supplies all bytes available in this buffer.
+    dataLen := bs.RemainBytes()
+    if pkg.PES_packet_length != 0 {
+        dataLen = int(pkg.PES_packet_length) - 3 - int(pkg.PES_header_data_length)
+        if dataLen < 0 {
+            return errParser
+        }
+    }
 
     if bs.RemainBytes() < dataLen {
         pkg.Pes_payload = bs.RemainData()
@@ -224,13 +228,8 @@ func (pkg *PesPacket) Decode(bs *codec.BitStream) error {
         return errNeedMore
     }
 
-    if pkg.PES_packet_length == 0 || bs.RemainBytes() <= dataLen {
-        pkg.Pes_payload = bs.RemainData()
-        bs.SkipBits(bs.RemainBits())
-    } else {
-        pkg.Pes_payload = bs.RemainData()[:dataLen]
-        bs.SkipBits(dataLen * 8)
-    }
+    pkg.Pes_payload = bs.RemainData()[:dataLen]
+    bs.SkipBits(dataLen * 8)
 
     return nil
 }
@@ -320,6 +319,7 @@ func (pkg *PesPacket) Encode(bsw *codec.BitStreamWriter) {
     bsw.PutUint8(pkg.PES_CRC_flag, 1)
     bsw.PutUint8(pkg.PES_extension_flag, 1)
     bsw.PutByte(pkg.PES_header_data_length)
+    headerStart := bsw.ByteOffset()
     if pkg.PTS_DTS_flags == 0x02 {
         bsw.PutUint8(0x02, 4)
         bsw.PutUint64(pkg.Pts>>30, 3)
@@ -373,6 +373,12 @@ func (pkg *PesPacket) Encode(bsw *codec.BitStreamWriter) {
     }
     if pkg.PES_CRC_flag == 1 {
         bsw.PutUint16(pkg.Previous_PES_packet_CRC, 16)
+    }
+    if pkg.PES_extension_flag == 0 {
+        stuffing := int(pkg.PES_header_data_length) - (bsw.ByteOffset() - headerStart)
+        if stuffing > 0 {
+            bsw.PutRepetValue(0xff, stuffing)
+        }
     }
     bsw.PutBytes(pkg.Pes_payload)
 }
