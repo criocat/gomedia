@@ -63,6 +63,7 @@ const (
     STATE_RTMP_PLAY_FAILED
     STATE_RTMP_PUBLISH_START
     STATE_RTMP_PUBLISH_FAILED
+    STATE_RTMP_PLAY_STOP
 )
 
 //https://blog.csdn.net/wq892373445/article/details/118387494
@@ -81,6 +82,7 @@ const (
     NETSTREAM_PUBLISH_START     StatusCode = "NetStream.Publish.Start"
     NETSTREAM_PLAY_START        StatusCode = "NetStream.Play.Start"
     NETSTREAM_PLAY_STOP         StatusCode = "NetStream.Play.Stop"
+    NETSTREAM_PLAY_UNPUBLISH_NOTIFY StatusCode = "NetStream.Play.UnpublishNotify"
     NETSTREAM_PLAY_FAILED       StatusCode = "NetStream.Play.Failed"
     NETSTREAM_PLAY_NOTFOUND     StatusCode = "NetStream.Play.StreamNotFound"
     NETSTREAM_PLAY_RESET        StatusCode = "NetStream.Play.Reset"
@@ -107,7 +109,7 @@ func (c StatusCode) Level() StatusLevel {
         return "status"
     case NETSTREAM_PLAY_START:
         return "status"
-    case NETSTREAM_PLAY_STOP:
+    case NETSTREAM_PLAY_STOP, NETSTREAM_PLAY_UNPUBLISH_NOTIFY:
         return "status"
     case NETSTREAM_PLAY_FAILED:
         return "error"
@@ -157,6 +159,8 @@ func (c StatusCode) Description() StatusLevel {
         return "Start play stream "
     case NETSTREAM_PLAY_STOP:
         return "Stop play stream"
+    case NETSTREAM_PLAY_UNPUBLISH_NOTIFY:
+        return "The publisher stopped publishing the stream"
     case NETSTREAM_PLAY_FAILED:
         return "Play stream failed"
     case NETSTREAM_PLAY_NOTFOUND:

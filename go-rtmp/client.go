@@ -364,6 +364,10 @@ func (cli *RtmpClient) handleCommandRes(data []byte) error {
 		}
 		return cli.handleResult(args)
 	case "_error":
+		if cli.lastMethod == GET_STREAM_LENGTH && len(args) > 0 && args[0].amfType == AMF0_NUMBER &&
+			args[0].value.(float64) == float64(cli.lastMethodTid) {
+			return nil
+		}
 		return cli.handleError(args)
 	case "onStatus":
 		return cli.handleStatus(args)
@@ -555,6 +559,8 @@ func (cli *RtmpClient) handleStatus(args []amf0Item) error {
 		cli.changeState(STATE_RTMP_PUBLISH_START)
 	} else if code == string(NETSTREAM_PLAY_START) {
 		cli.changeState(STATE_RTMP_PLAY_START)
+	} else if !cli.isPublish && (code == string(NETSTREAM_PLAY_STOP) || code == string(NETSTREAM_PLAY_UNPUBLISH_NOTIFY)) {
+		cli.changeState(STATE_RTMP_PLAY_STOP)
 	} else if level == string(LEVEL_ERROR) {
 		if cli.isPublish {
 			cli.changeState(STATE_RTMP_PUBLISH_FAILED)
