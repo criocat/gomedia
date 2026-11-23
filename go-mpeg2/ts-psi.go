@@ -4,6 +4,46 @@ import "errors"
 
 const maxPSISectionLength = 1021
 
+type patAssembly struct {
+	transportStreamID uint16
+	version           uint8
+	sections          [][]PmtPair
+	received          int
+}
+
+func (assembly *patAssembly) add(pat *Pat) ([]PmtPair, bool) {
+	if pat.Last_section_number == 0 {
+		*assembly = patAssembly{}
+		return pat.Pmts, true
+	}
+
+	total := int(pat.Last_section_number) + 1
+	if len(assembly.sections) != total || assembly.version != pat.Version_number ||
+		assembly.transportStreamID != pat.Transport_stream_id {
+		*assembly = patAssembly{
+			transportStreamID: pat.Transport_stream_id,
+			version:           pat.Version_number,
+			sections:          make([][]PmtPair, total),
+		}
+	}
+	if assembly.sections[pat.Section_number] == nil {
+		assembly.received++
+	}
+	pairs := make([]PmtPair, len(pat.Pmts))
+	copy(pairs, pat.Pmts)
+	assembly.sections[pat.Section_number] = pairs
+	if assembly.received < total {
+		return nil, false
+	}
+
+	var programs []PmtPair
+	for _, section := range assembly.sections {
+		programs = append(programs, section...)
+	}
+	*assembly = patAssembly{}
+	return programs, true
+}
+
 type psiSections struct {
 	pending     []byte
 	continuity  uint8

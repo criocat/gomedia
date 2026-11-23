@@ -63,14 +63,16 @@ func (stream *tsstream) updateTimestamps() {
 }
 
 type tsprogram struct {
-    pn       uint16
-    streams  map[uint16]*tsstream
-    sections psiSections
+    pn                uint16
+    transportStreamID uint16
+    streams           map[uint16]*tsstream
+    sections          psiSections
 }
 
 type TSDemuxer struct {
     programs    map[uint16]*tsprogram
     patSections psiSections
+    pat         patAssembly
     OnFrame     func(cid TS_STREAM_TYPE, frame []byte, pts uint64, dts uint64)
     OnTSPacket  func(pkg *TSPacket)
 }
@@ -138,6 +140,9 @@ func (demuxer *TSDemuxer) Input(r io.Reader) error {
 }
 
 func (demuxer *TSDemuxer) readPAT(packet *TSPacket, data []byte) error {
+    if packet.Field != nil && packet.Field.Discontinuity_indicator != 0 {
+        demuxer.pat = patAssembly{}
+    }
     return demuxer.patSections.input(packet, data, func(section []byte) error {
         pat := NewPat()
         if err := pat.Decode(codec.NewBitStream(section)); err != nil {
@@ -149,13 +154,40 @@ func (demuxer *TSDemuxer) readPAT(packet *TSPacket, data []byte) error {
         if pat.Current_next_indicator == 0 {
             return nil
         }
-        for _, pmt := range pat.Pmts {
-            if pmt.Program_number != 0 && demuxer.programs[pmt.PID] == nil {
-                demuxer.programs[pmt.PID] = &tsprogram{streams: make(map[uint16]*tsstream)}
-            }
+        if pat.Section_number > pat.Last_section_number {
+            return errors.New("MPEG-TS PAT section number exceeds the last section")
+        }
+        if pairs, complete := demuxer.pat.add(pat); complete {
+            demuxer.applyPAT(pat.Transport_stream_id, pairs)
         }
         return nil
     })
+}
+
+func (demuxer *TSDemuxer) applyPAT(transportStreamID uint16, pairs []PmtPair) {
+    programs := make(map[uint16]*tsprogram, len(pairs))
+    for _, pair := range pairs {
+        if pair.Program_number == 0 {
+            continue
+        }
+        program := demuxer.programs[pair.PID]
+        if program == nil || program.pn != pair.Program_number || program.transportStreamID != transportStreamID {
+            program = &tsprogram{
+                pn:                pair.Program_number,
+                transportStreamID: transportStreamID,
+                streams:           make(map[uint16]*tsstream),
+            }
+        }
+        programs[pair.PID] = program
+    }
+    for pid, program := range demuxer.programs {
+        if programs[pid] != program {
+            for _, stream := range program.streams {
+                demuxer.flushStream(stream)
+            }
+        }
+    }
+    demuxer.programs = programs
 }
 
 func (stream *tsstream) dropIncompletePES() {
@@ -242,20 +274,25 @@ func (demuxer *TSDemuxer) readPMT(program *tsprogram, packet *TSPacket, data []b
             return nil
         }
         program.pn = pmt.Program_number
+        streams := make(map[uint16]*tsstream, len(pmt.Streams))
         for _, entry := range pmt.Streams {
             cid := TS_STREAM_TYPE(entry.StreamType)
-            if old := program.streams[entry.Elementary_PID]; old != nil {
-                if old.cid == cid {
-                    continue
-                }
-                demuxer.flushStream(old)
+            if old := program.streams[entry.Elementary_PID]; old != nil && old.cid == cid {
+                streams[entry.Elementary_PID] = old
+                continue
             }
-            program.streams[entry.Elementary_PID] = &tsstream{
+            streams[entry.Elementary_PID] = &tsstream{
                 cid:     cid,
                 pes_sid: findPESIDByStreamType(cid),
                 pes_pkg: NewPesPacket(),
             }
         }
+        for pid, stream := range program.streams {
+            if streams[pid] != stream {
+                demuxer.flushStream(stream)
+            }
+        }
+        program.streams = streams
         return nil
     })
 }
