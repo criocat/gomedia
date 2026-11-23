@@ -4,6 +4,7 @@ import (
     "encoding/binary"
     "errors"
     "io"
+    "math"
 
     "github.com/yapingcat/gomedia/go-codec"
 )
@@ -400,19 +401,34 @@ func (demuxer *MovDemuxer) GetSyncTable(trackId uint32) ([]SyncSample, error) {
         return nil, errors.New("not found track")
     }
 
-    if track.stbltable == nil || track.stbltable.stss == nil {
+    if track.stbltable == nil || (track.stbltable.stss == nil && demuxer.isFragement) {
         return nil, errors.New("not found stss box")
     }
 
-    syncTable := make([]SyncSample, len(track.stbltable.stss.sampleNumber))
-
-    for i := 0; i < len(syncTable); i++ {
-        idx := track.stbltable.stss.sampleNumber[i] - 1
+    stss := track.stbltable.stss
+    count := len(track.samplelist)
+    if stss != nil {
+        count = len(stss.sampleNumber)
+    }
+    syncTable := make([]SyncSample, count)
+    for i := range syncTable {
+        idx := i
+        if stss != nil {
+            sampleNumber := stss.sampleNumber[i]
+            if sampleNumber == 0 || uint64(sampleNumber) > uint64(len(track.samplelist)) {
+                return nil, errors.New("MP4 sync sample number out of range")
+            }
+            idx = int(sampleNumber - 1)
+        }
+        sample := track.samplelist[idx]
+        if sample.offset > math.MaxUint32 {
+            return nil, errors.New("MP4 sync sample offset exceeds 32 bits")
+        }
         syncTable[i] = SyncSample{
-            Pts:    track.samplelist[idx].pts * 1000 / uint64(track.timescale),
-            Dts:    track.samplelist[idx].dts * 1000 / uint64(track.timescale),
-            Offset: uint32(track.samplelist[idx].offset),
-            Size:   uint32(track.samplelist[idx].size),
+            Pts:    sample.pts * 1000 / uint64(track.timescale),
+            Dts:    sample.dts * 1000 / uint64(track.timescale),
+            Offset: uint32(sample.offset),
+            Size:   uint32(sample.size),
         }
     }
     return syncTable, nil
