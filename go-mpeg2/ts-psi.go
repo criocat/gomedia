@@ -1,6 +1,10 @@
 package mpeg2
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/yapingcat/gomedia/go-codec"
+)
 
 const maxPSISectionLength = 1021
 
@@ -61,6 +65,15 @@ func psiSectionSize(data []byte) (int, error) {
 	return 3 + length, nil
 }
 
+func readCheckedPSISection(section []byte, readSection func([]byte) error) error {
+	// A complete PAT or PMT has a zero CRC remainder. Retain the active
+	// tables when a damaged section arrives.
+	if len(section) < 4 || codec.CalcCrc32(0xffffffff, section) != 0 {
+		return nil
+	}
+	return readSection(section)
+}
+
 func (sections *psiSections) complete(payload []byte, readSection func([]byte) error) error {
 	if len(sections.pending) == 0 {
 		return nil
@@ -76,7 +89,7 @@ func (sections *psiSections) complete(payload []byte, readSection func([]byte) e
 	}
 	section := sections.pending[:size]
 	sections.pending = nil
-	return readSection(section)
+	return readCheckedPSISection(section, readSection)
 }
 
 func (sections *psiSections) input(packet *TSPacket, payload []byte, readSection func([]byte) error) error {
@@ -118,7 +131,7 @@ func (sections *psiSections) input(packet *TSPacket, payload []byte, readSection
 			sections.pending = append(sections.pending, payload...)
 			break
 		}
-		if err := readSection(payload[:size]); err != nil {
+		if err := readCheckedPSISection(payload[:size], readSection); err != nil {
 			return err
 		}
 		payload = payload[size:]

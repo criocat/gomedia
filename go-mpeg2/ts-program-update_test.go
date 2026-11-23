@@ -73,6 +73,67 @@ func TestTSDemuxerDropsTracksMissingFromCurrentPMT(t *testing.T) {
 	}
 }
 
+func TestTSDemuxerKeepsProgramAfterDamagedPAT(t *testing.T) {
+	muxer, wire := tsProgramTestMuxer()
+	program := &table_pmt{pid: 0x200, pm: 1, pcr_pid: 0x100}
+	stream := NewPESStream(0x100, TS_STREAM_AAC)
+	writeTSProgramTestPAT(muxer, 0, 0, 0, PmtPair{1, program.pid})
+	writeTSProgramTestPMT(muxer, program, stream)
+	muxer.writePES(stream, program, []byte(clockTestAAC), 9000, 9000, false, false)
+
+	writeTSSectionWithBadCRC(muxer, func() {
+		writeTSProgramTestPAT(muxer, 1, 0, 0, PmtPair{2, 0x201})
+	})
+	muxer.writePES(stream, program, []byte(clockTestAAC), 10800, 10800, false, false)
+
+	demuxer, samples := readTSProgramTestSamples(t, wire)
+	checkTSProgramTestSamples(t, samples, []tsProgramTestSample{
+		{TS_STREAM_AAC, clockTestAAC, 100},
+		{TS_STREAM_AAC, clockTestAAC, 120},
+	})
+	if demuxer.programs[program.pid] == nil || demuxer.programs[0x201] != nil {
+		t.Error("the damaged PAT replaced the active program")
+	}
+}
+
+func TestTSDemuxerKeepsCodecAfterDamagedPMT(t *testing.T) {
+	muxer, wire := tsProgramTestMuxer()
+	program := &table_pmt{pid: 0x200, pm: 1, pcr_pid: 0x100}
+	stream := NewPESStream(0x100, TS_STREAM_AAC)
+	writeTSProgramTestPAT(muxer, 0, 0, 0, PmtPair{1, program.pid})
+	writeTSProgramTestPMT(muxer, program, stream)
+	muxer.writePES(stream, program, []byte(clockTestAAC), 9000, 9000, false, false)
+
+	program.version_number++
+	alternate := NewPESStream(stream.pid, TS_STREAM_AUDIO_MPEG1)
+	writeTSSectionWithBadCRC(muxer, func() {
+		writeTSProgramTestPMT(muxer, program, alternate)
+	})
+	muxer.writePES(stream, program, []byte(clockTestAAC), 10800, 10800, false, false)
+
+	demuxer, samples := readTSProgramTestSamples(t, wire)
+	checkTSProgramTestSamples(t, samples, []tsProgramTestSample{
+		{TS_STREAM_AAC, clockTestAAC, 100},
+		{TS_STREAM_AAC, clockTestAAC, 120},
+	})
+	if got := demuxer.programs[program.pid].streams[stream.pid].cid; got != TS_STREAM_AAC {
+		t.Errorf("codec = %d, want AAC after the damaged PMT", got)
+	}
+}
+
+func writeTSSectionWithBadCRC(muxer *TSMuxer, writeSection func()) {
+	output := muxer.OnPacket
+	muxer.OnPacket = func(packet []byte) {
+		// The section fits in one packet and starts after the zero pointer.
+		wire := append([]byte(nil), packet...)
+		sectionLength := int(wire[6]&0x0f)<<8 | int(wire[7])
+		wire[8+sectionLength-1] ^= 1
+		output(wire)
+	}
+	writeSection()
+	muxer.OnPacket = output
+}
+
 func tsProgramTestMuxer() (*TSMuxer, *bytes.Buffer) {
 	var wire bytes.Buffer
 	muxer := NewTSMuxer()
