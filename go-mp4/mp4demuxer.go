@@ -329,6 +329,9 @@ func (demuxer *MovDemuxer) ReadPacket() (*AVPacket, error) {
         }
         sample := make([]byte, minTsSample.size)
         if _, err := io.ReadFull(demuxer.reader, sample); err != nil {
+            if errors.Is(err, io.EOF) {
+                return nil, io.ErrUnexpectedEOF
+            }
             return nil, err
         }
         sampleIndex := demuxer.readSampleIdx[whichTracki]
