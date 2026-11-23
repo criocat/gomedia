@@ -598,7 +598,7 @@ func GetH265SPSId(sps []byte) uint64 {
 
 func GetH265PPSIdWithStartCode(pps []byte) uint64 {
     start, sc := FindStartCode(pps, 0)
-    return GetH265SPSId(pps[start+int(sc):])
+    return GetH265PPSId(pps[start+int(sc):])
 }
 
 func GetH265PPSId(pps []byte) uint64 {

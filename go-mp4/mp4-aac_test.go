@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
 	"testing"
@@ -14,6 +15,47 @@ type aacFailingWriter struct {
 	*fmp4WriterSeeker
 	armed  bool
 	writes int
+}
+
+func TestMP4AACPreservesRateAboveAudioSampleEntryRange(t *testing.T) {
+	const rate = 96000
+	frame := append([]byte(nil), mp4TestAACFrame...)
+	frame[2] &^= 0x3c // AAC sampling-frequency index 0 is 96000 Hz.
+	output := newFmp4WriterSeeker(4096)
+	muxer, err := CreateMp4Muxer(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := muxer.AddAudioTrack(MP4_CODEC_AAC)
+	if err := muxer.Write(id, frame, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := muxer.WriteTrailer(); err != nil {
+		t.Fatal(err)
+	}
+
+	entryType := bytes.Index(output.buffer, []byte("mp4a"))
+	if entryType < 0 || len(output.buffer)-entryType < 32 {
+		t.Fatal("missing mp4a sample entry")
+	}
+	rateField := output.buffer[entryType+28 : entryType+32]
+	if encoded := binary.BigEndian.Uint32(rateField); encoded != 0 {
+		t.Errorf("16.16 sample rate = %#x, want zero for 96 kHz", encoded)
+	}
+	check := func(t *testing.T) {
+		demuxer := CreateMp4Demuxer(bytes.NewReader(output.buffer))
+		tracks, err := demuxer.ReadHead()
+		if err != nil || len(tracks) != 1 {
+			t.Fatalf("ReadHead returned %v, %v", tracks, err)
+		}
+		if tracks[0].SampleRate != rate {
+			t.Errorf("AAC sample rate = %d, want %d", tracks[0].SampleRate, rate)
+		}
+	}
+	t.Run("zero_sample_entry_rate", check)
+	// Older gomedia files wrapped 96000 to its low 16 bits.
+	binary.BigEndian.PutUint32(rateField, (rate&0xffff)<<16)
+	t.Run("legacy_wrapped_sample_entry_rate", check)
 }
 
 func (writer *aacFailingWriter) Write(data []byte) (int, error) {

@@ -78,6 +78,17 @@ var dst []byte = []byte{
 	0x6d, 0xae, 0x01, 0x00, 0x00, 0x03, 0x03, 0xe8, 0x00, 0x00, 0x5d, 0xc0, 0x08, 0x00, 0x00,
 	0x00, 0x01, 0x44, 0x01, 0xc1, 0x73, 0xd1, 0x89}
 
+func TestHEVCPPSIdWithAnnexBStartCode(t *testing.T) {
+	// x265 PPS with pic_parameter_set_id equal to zero.
+	pps := []byte{0x44, 0x01, 0xc1, 0x72, 0xb4, 0x22, 0x40}
+	for _, prefix := range [][]byte{{0, 0, 1}, {0, 0, 0, 1}} {
+		nal := append(prefix, pps...)
+		if got := GetH265PPSIdWithStartCode(nal); got != 0 {
+			t.Errorf("PPS ID with a %d-byte start code = %d, want 0", len(prefix), got)
+		}
+	}
+}
+
 func TestVPS_Decode(t *testing.T) {
 	type args struct {
 		nalu []byte

@@ -370,6 +370,11 @@ func makeStsd(track *mp4track, handler_type HandlerType) []byte {
         entry := NewAudioSampleEntry(getCodecNameWithCodecId(track.cid))
         entry.channelcount = uint16(track.chanelCount)
         entry.samplerate = track.sampleRate
+        if track.cid == MP4_CODEC_AAC && entry.samplerate > 65535 {
+            // The version-zero sample entry has only 16 integer bits.
+            // AAC keeps its exact sample rate in AudioSpecificConfig.
+            entry.samplerate = 0
+        }
         entry.samplesize = uint16(track.sampleBits)
         if opusConfig != nil {
             entry.samplerate = 48000
@@ -502,6 +507,16 @@ func decodeEsdsBox(demuxer *MovDemuxer, size uint32) (err error) {
     vosdata := decodeESDescriptor(buf, track)
     if track.extra != nil {
         track.extra.load(vosdata)
+    }
+    if track.cid == MP4_CODEC_AAC {
+        var config codec.AudioSpecificConfiguration
+        if config.Decode(vosdata) == nil && int(config.Sample_freq_index) < len(codec.AAC_Sampling_Idx) {
+            rate := uint32(codec.AAC_Sampling_Idx[config.Sample_freq_index])
+            // Older files written by gomedia may contain the truncated rate.
+            if track.sampleRate == 0 || (rate > 65535 && track.sampleRate == rate&0xffff) {
+                track.sampleRate = rate
+            }
+        }
     }
     return nil
 }
