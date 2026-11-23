@@ -242,10 +242,24 @@ func ConvertADTSToASC(frame []byte) (*AudioSpecificConfiguration, error) {
 }
 
 func ConvertASCToADTS(asc []byte, aacbytes int) (*ADTS_Frame_Header, error) {
+    const headerSize = 7
+    const maxFrameSize = (1 << 13) - 1
+    if aacbytes < headerSize || aacbytes > maxFrameSize {
+        return nil, errors.New("invalid AAC frame length for ADTS")
+    }
     aac_asc := NewAudioSpecificConfiguration()
     err := aac_asc.Decode(asc)
     if err != nil {
         return nil, err
+    }
+    if aac_asc.Audio_object_type < 1 || aac_asc.Audio_object_type > 4 {
+        return nil, errors.New("AAC object type is not representable in ADTS")
+    }
+    if int(aac_asc.Sample_freq_index) >= len(AAC_Sampling_Idx) {
+        return nil, errors.New("AAC sampling frequency is not representable in ADTS")
+    }
+    if aac_asc.Channel_configuration > 7 {
+        return nil, errors.New("AAC channel configuration is not representable in ADTS")
     }
     aac_adts := NewAdtsFrameHeader()
     aac_adts.Fix_Header.Profile = aac_asc.Audio_object_type - 1

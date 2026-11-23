@@ -111,3 +111,62 @@ func TestASCToADTSMarksUnknownBufferFullness(t *testing.T) {
 		t.Errorf("buffer fullness = %#03x, want 0x7ff", fullness)
 	}
 }
+
+func TestASCToADTSRejectsUnrepresentableConfiguration(t *testing.T) {
+	// AAC-LC with an explicit frequency outside the ADTS rate table.
+	explicitRate := NewBitStreamWriter(5)
+	explicitRate.PutUint8(2, 5)
+	explicitRate.PutUint8(15, 4)
+	explicitRate.PutUint32(50000, 24)
+	explicitRate.PutUint8(2, 4)
+	explicitRate.PutUint8(0, 3)
+
+	// HE-AAC, with a 22.05 kHz LC core and a 44.1 kHz SBR extension.
+	sbr := NewBitStreamWriter(4)
+	sbr.PutUint8(5, 5)
+	sbr.PutUint8(7, 4)
+	sbr.PutUint8(2, 4)
+	sbr.PutUint8(4, 4)
+	sbr.PutUint8(2, 5)
+	sbr.PutUint8(0, 3)
+	sbr.PutUint8(0, 7)
+
+	for _, tc := range []struct {
+		name string
+		asc  []byte
+	}{
+		{"explicit rate", explicitRate.Bits()},
+		{"SBR object type", sbr.Bits()},
+		{"channel configuration 11", (&AudioSpecificConfiguration{
+			Audio_object_type: 2, Sample_freq_index: 3, Channel_configuration: 11,
+		}).Encode()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if header, err := ConvertASCToADTS(tc.asc, 128); err == nil || header != nil {
+				t.Fatalf("converted configuration to header %+v, want an error", header)
+			}
+		})
+	}
+}
+
+func TestASCToADTSRejectsUnrepresentableFrameLengths(t *testing.T) {
+	asc := (&AudioSpecificConfiguration{
+		Audio_object_type: 2, Sample_freq_index: 4, Channel_configuration: 2,
+	}).Encode()
+	for _, length := range []int{-1, 0, 6, 8192, 65543} {
+		if header, err := ConvertASCToADTS(asc, length); err == nil || header != nil {
+			t.Errorf("converted frame length %d to header %+v, want an error", length, header)
+		}
+	}
+	for _, length := range []int{7, 8191} {
+		header, err := ConvertASCToADTS(asc, length)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded ADTS_Frame_Header
+		decoded.Decode(header.Encode())
+		if got := int(decoded.Variable_Header.Frame_length); got != length {
+			t.Errorf("decoded frame length %d, want %d", got, length)
+		}
+	}
+}
