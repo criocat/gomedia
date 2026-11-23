@@ -273,7 +273,7 @@ func (demuxer *TSDemuxer) readPES(stream *tsstream, packet *TSPacket, payload []
     if stream.pes_sid == PES_STREAM_AUDIO {
         demuxer.doAudioPesPacket(stream, start)
     } else if stream.pes_sid == PES_STREAM_VIDEO {
-        demuxer.doVideoPesPacket(stream, start)
+        demuxer.doVideoPesPacket(stream)
     }
     return nil
 }
@@ -368,21 +368,25 @@ func (demuxer *TSDemuxer) flushStream(stream *tsstream) {
     }
     payload := stream.pkg.payload
     if stream.cid == TS_STREAM_H264 || stream.cid == TS_STREAM_H265 {
-        audLen := 0
-        codec.SplitFrameWithStartCode(payload, func(nalu []byte) bool {
-            if (stream.cid == TS_STREAM_H264 && codec.H264NaluType(nalu) == codec.H264_NAL_AUD) ||
-                (stream.cid == TS_STREAM_H265 && codec.H265NaluType(nalu) == codec.H265_NAL_AUD) {
-                audLen += len(nalu)
-            }
-            return false
-        })
-        payload = payload[audLen:]
+        payload = stripLeadingVideoAUD(stream.cid, payload)
     }
     demuxer.OnFrame(stream.cid, payload, stream.pkg.pts/90, stream.pkg.dts/90)
     stream.pkg = nil
 }
 
-func (demuxer *TSDemuxer) doVideoPesPacket(stream *tsstream, start uint8) {
+func stripLeadingVideoAUD(cid TS_STREAM_TYPE, frame []byte) []byte {
+    audLen := 0
+    codec.SplitFrameWithStartCode(frame, func(nalu []byte) bool {
+        if (cid == TS_STREAM_H264 && codec.H264NaluType(nalu) == codec.H264_NAL_AUD) ||
+            (cid == TS_STREAM_H265 && codec.H265NaluType(nalu) == codec.H265_NAL_AUD) {
+            audLen = len(nalu)
+        }
+        return false
+    })
+    return frame[audLen:]
+}
+
+func (demuxer *TSDemuxer) doVideoPesPacket(stream *tsstream) {
     if stream.cid != TS_STREAM_H264 && stream.cid != TS_STREAM_H265 {
         return
     }
@@ -392,16 +396,7 @@ func (demuxer *TSDemuxer) doVideoPesPacket(stream *tsstream, start uint8) {
         stream.pkg.dts = stream.dts
     }
     stream.pkg.payload = append(stream.pkg.payload, stream.pes_pkg.Pes_payload...)
-    update := false
-    if stream.cid == TS_STREAM_H264 {
-        update = demuxer.splitH264Frame(stream)
-    } else {
-        update = demuxer.splitH265Frame(stream)
-    }
-    if update {
-        stream.pkg.pts = stream.pts
-        stream.pkg.dts = stream.dts
-    }
+    demuxer.splitVideoAccessUnits(stream)
 }
 
 func (demuxer *TSDemuxer) doAudioPesPacket(stream *tsstream, start uint8) {
@@ -426,149 +421,59 @@ func (demuxer *TSDemuxer) doAudioPesPacket(stream *tsstream, start uint8) {
     stream.pkg.dts = stream.dts
 }
 
-func (demuxer *TSDemuxer) splitH264Frame(stream *tsstream) bool {
+func (demuxer *TSDemuxer) splitVideoAccessUnits(stream *tsstream) {
     data := stream.pkg.payload
-    start, sct := codec.FindStartCode(data, 0)
-    datalen := len(data)
-    vcl := 0
-    newAcessUnit := false
-    needUpdate := false
-    frameBeg := start
-    if frameBeg < 0 {
-        frameBeg = 0
+    start, startCodeSize := codec.FindStartCode(data, 0)
+    frameStart := start
+    headerSize := 1
+    if stream.cid == TS_STREAM_H265 {
+        headerSize = 2
     }
-    for start < datalen {
-        if start < 0 || len(data)-start <= int(sct)+1 {
+
+    hasVCL := false
+    for start >= 0 {
+        naluStart := start + int(startCodeSize)
+        if naluStart+headerSize >= len(data) {
             break
         }
-
-        naluType := codec.H264NaluTypeWithoutStartCode(data[start+int(sct):])
-        switch naluType {
-        case codec.H264_NAL_AUD, codec.H264_NAL_SPS,
-            codec.H264_NAL_PPS, codec.H264_NAL_SEI:
-            if vcl > 0 {
-                newAcessUnit = true
+        nalu := data[naluStart:]
+        var isVCL, startsAccessUnit bool
+        if stream.cid == TS_STREAM_H264 {
+            kind := codec.H264NaluTypeWithoutStartCode(nalu)
+            isVCL = codec.IsH264VCLNaluType(kind)
+            switch kind {
+            case codec.H264_NAL_AUD, codec.H264_NAL_SPS, codec.H264_NAL_PPS, codec.H264_NAL_SEI:
+                startsAccessUnit = true
+            default:
+                startsAccessUnit = isVCL && nalu[headerSize]&0x80 != 0
             }
-        case codec.H264_NAL_I_SLICE, codec.H264_NAL_P_SLICE,
-            codec.H264_NAL_SLICE_A, codec.H264_NAL_SLICE_B, codec.H264_NAL_SLICE_C:
-            if vcl > 0 {
-                // bs := codec.NewBitStream(data[start+int(sct)+1:])
-                // sliceHdr := &codec.SliceHeader{}
-                // sliceHdr.Decode(bs)
-                if data[start+int(sct)+1]&0x80 > 0 {
-                    newAcessUnit = true
-                }
-            } else {
-                vcl++
+        } else {
+            kind := codec.H265NaluTypeWithoutStartCode(nalu)
+            isVCL = codec.IsH265VCLNaluType(kind)
+            switch kind {
+            case codec.H265_NAL_AUD, codec.H265_NAL_VPS, codec.H265_NAL_SPS, codec.H265_NAL_PPS, codec.H265_NAL_SEI:
+                startsAccessUnit = true
+            default:
+                startsAccessUnit = isVCL && nalu[headerSize]&0x80 != 0
             }
         }
 
-        if vcl > 0 && newAcessUnit {
+        if hasVCL && startsAccessUnit {
             if demuxer.OnFrame != nil {
-                audLen := 0
-                codec.SplitFrameWithStartCode(data[frameBeg:start], func(nalu []byte) bool {
-                    if codec.H264NaluType(nalu) == codec.H264_NAL_AUD {
-                        audLen += len(nalu)
-                    }
-                    return false
-                })
-                demuxer.OnFrame(stream.cid, data[frameBeg+audLen:start], stream.pkg.pts/90, stream.pkg.dts/90)
+                frame := stripLeadingVideoAUD(stream.cid, data[frameStart:start])
+                demuxer.OnFrame(stream.cid, frame, stream.pkg.pts/90, stream.pkg.dts/90)
             }
-            frameBeg = start
-            needUpdate = true
-            vcl = 0
-            newAcessUnit = false
+            frameStart = start
+            stream.pkg.pts = stream.pts
+            stream.pkg.dts = stream.dts
+            hasVCL = false
         }
-        end, sct2 := codec.FindStartCode(data, start+3)
-        if end < 0 {
-            break
-        }
-        start = end
-        sct = sct2
+        hasVCL = hasVCL || isVCL
+        start, startCodeSize = codec.FindStartCode(data, naluStart)
     }
 
-    if frameBeg == 0 {
-        return needUpdate
+    if frameStart > 0 {
+        size := copy(data, data[frameStart:])
+        stream.pkg.payload = data[:size]
     }
-    copy(stream.pkg.payload, data[frameBeg:datalen])
-    stream.pkg.payload = stream.pkg.payload[0 : datalen-frameBeg]
-    return needUpdate
-}
-
-func (demuxer *TSDemuxer) splitH265Frame(stream *tsstream) bool {
-    data := stream.pkg.payload
-    start, sct := codec.FindStartCode(data, 0)
-    datalen := len(data)
-    vcl := 0
-    newAcessUnit := false
-    needUpdate := false
-    frameBeg := start
-    if frameBeg < 0 {
-        frameBeg = 0
-    }
-    for start < datalen {
-        if start < 0 || len(data)-start <= int(sct)+2 {
-            break
-        }
-        naluType := codec.H265NaluTypeWithoutStartCode(data[start+int(sct):])
-        switch naluType {
-        case codec.H265_NAL_AUD, codec.H265_NAL_SPS,
-            codec.H265_NAL_PPS, codec.H265_NAL_VPS, codec.H265_NAL_SEI:
-            if vcl > 0 {
-                newAcessUnit = true
-            }
-        case codec.H265_NAL_Slice_TRAIL_N, codec.H265_NAL_LICE_TRAIL_R,
-            codec.H265_NAL_SLICE_TSA_N, codec.H265_NAL_SLICE_TSA_R,
-            codec.H265_NAL_SLICE_STSA_N, codec.H265_NAL_SLICE_STSA_R,
-            codec.H265_NAL_SLICE_RADL_N, codec.H265_NAL_SLICE_RADL_R,
-            codec.H265_NAL_SLICE_RASL_N, codec.H265_NAL_SLICE_RASL_R,
-            codec.H265_NAL_SLICE_BLA_W_LP, codec.H265_NAL_SLICE_BLA_W_RADL,
-            codec.H265_NAL_SLICE_BLA_N_LP, codec.H265_NAL_SLICE_IDR_W_RADL,
-            codec.H265_NAL_SLICE_IDR_N_LP, codec.H265_NAL_SLICE_CRA:
-            if vcl > 0 {
-                // bs := codec.NewBitStream(data[start+int(sct)+2:])
-                // sliceHdr := &codec.SliceHeader{}
-                // sliceHdr.Decode(bs)
-                // if sliceHdr.First_mb_in_slice == 0 {
-                //     newAcessUnit = true
-                // }
-                if data[start+int(sct)+2]&0x80 > 0 {
-                    newAcessUnit = true
-                }
-            } else {
-                vcl++
-            }
-        }
-
-        if vcl > 0 && newAcessUnit {
-            if demuxer.OnFrame != nil {
-                audLen := 0
-                codec.SplitFrameWithStartCode(data[frameBeg:start], func(nalu []byte) bool {
-                    if codec.H265NaluType(nalu) == codec.H265_NAL_AUD {
-                        audLen = len(nalu)
-                    }
-                    return false
-                })
-                demuxer.OnFrame(stream.cid, data[frameBeg+audLen:start], stream.pkg.pts/90, stream.pkg.dts/90)
-            }
-            frameBeg = start
-            needUpdate = true
-            vcl = 0
-            newAcessUnit = false
-        }
-
-        end, sct2 := codec.FindStartCode(data, start+3)
-        if end < 0 {
-            break
-        }
-        start = end
-        sct = sct2
-    }
-
-    if frameBeg == 0 {
-        return needUpdate
-    }
-    copy(stream.pkg.payload, data[frameBeg:datalen])
-    stream.pkg.payload = stream.pkg.payload[0 : datalen-frameBeg]
-    return needUpdate
 }
