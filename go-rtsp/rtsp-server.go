@@ -186,7 +186,7 @@ func (server *RtspServer) handleRequest(req []byte) (ret int, err error) {
     res.Fileds = make(HeadFiled)
     res.StatusCode = 200
     res.Version = RTSP_1_0
-    if server.sessionId != "" {
+    if server.sessionId != "" && (request.Method != OPTIONS || request.Fileds.Has(Session)) {
         if !request.Fileds.Has(Session) || request.Fileds[Session] != server.sessionId {
             res.StatusCode = Session_Not_Found
             return ret, server.sendRespones(request, res)
@@ -285,22 +285,21 @@ func (server *RtspServer) handleRequest(req []byte) (ret int, err error) {
             tr, _ = parseRange(request.Fileds[Range])
         }
         for _, t := range server.tracks {
-            i := &RtpInfo{}
-            i.Url = t.uri
-            i.Seq = t.initSequence
+            if t.transport != nil {
+                info = append(info, t.playbackRtpInfo())
+            }
         }
         server.handle.HandlePlay(server, request, &res, tr, info)
         if res.StatusCode == 200 {
             if tr != nil {
                 res.Fileds[Range] = tr.EncodeString()
             }
-            if len(info) > 0 {
-                infostr := ""
-                for _, i := range info {
-                    infostr += i.EncodeString()
-                    infostr += ","
+            if len(info) > 0 && !res.Fileds.Has(RTPInfo) {
+                values := make([]string, len(info))
+                for i, track := range info {
+                    values[i] = track.EncodeString()
                 }
-                res.Fileds[RTPInfo] = infostr[:len(infostr)-1]
+                res.Fileds[RTPInfo] = strings.Join(values, ",")
             }
         }
     case RECORD:

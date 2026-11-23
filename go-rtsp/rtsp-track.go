@@ -3,6 +3,7 @@ package rtsp
 import (
     "fmt"
     "math/rand"
+    "sync/atomic"
     "time"
 
     "github.com/yapingcat/gomedia/go-codec"
@@ -37,6 +38,7 @@ type RtspTrack struct {
     extra        interface{}
     paramHandler sdp.FmtpCodecParamParser
     initSequence uint16
+    nextSequence uint32
     ssrc         uint32
     recvCtx      *rtcp.RtcpContext
     sendCtx      *rtcp.RtcpContext
@@ -81,6 +83,7 @@ func newTrack(name string, codec RtspCodec, opt ...TrackOption) *RtspTrack {
         o(track)
     }
     track.ssrc = rand.Uint32()
+    track.nextSequence = uint32(track.initSequence)
     track.unpack = track.createUnpacker()
     track.pack = track.createPacker()
     track.sendCtx = rtcp.NewRtcpContext(track.ssrc, track.initSequence, track.Codec.SampleRate)
@@ -91,9 +94,14 @@ func newTrack(name string, codec RtspCodec, opt ...TrackOption) *RtspTrack {
         track.recvCtx.ReceivedRtp(pkg)
     })
     track.pack.HookRtp(func(pkg *rtp.RtpPacket) {
+        atomic.StoreUint32(&track.nextSequence, uint32(pkg.Header.SequenceNumber+1))
         track.sendCtx.SendRtp(pkg)
     })
     return track
+}
+
+func (track *RtspTrack) playbackRtpInfo() *RtpInfo {
+    return NewRtpInfo(track.uri, uint16(atomic.LoadUint32(&track.nextSequence)))
 }
 
 func (track *RtspTrack) EnableTCP() {
