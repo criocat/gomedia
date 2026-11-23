@@ -441,8 +441,8 @@ func (client *RtspClient) handleDescribe(res *RtspResponse) (err error) {
         }
     }
 
-    err = client.sdpContext.ParserSdp(res.Body)
-    if err != nil {
+    description := &sdp.Sdp{}
+    if err := description.ParserSdp(res.Body); err != nil {
         return err
     }
 
@@ -478,17 +478,18 @@ func (client *RtspClient) handleDescribe(res *RtspResponse) (err error) {
         return base.ResolveReference(ref).String(), nil
     }
 
-    if client.sdpContext.ControlUrl == "" {
-        if len(client.sdpContext.Medias) != 1 || client.sdpContext.Medias[0].ControlUrl == "" {
+    if description.ControlUrl == "" {
+        if len(description.Medias) != 1 || description.Medias[0].ControlUrl == "" {
             return errors.New("missing RTSP control URL")
         }
     } else {
-        client.sdpContext.ControlUrl, err = getControlURL(client.sdpContext.ControlUrl)
+        description.ControlUrl, err = getControlURL(description.ControlUrl)
         if err != nil {
             return err
         }
     }
-    for _, media := range client.sdpContext.Medias {
+    tracks := make(map[string]*RtspTrack, len(description.Medias))
+    for _, media := range description.Medias {
         fmtpHandle := sdp.CreateFmtpParamParser(media.EncodeName)
         if fmtpHandle != nil {
             fmtpHandle.Load(media.Attrs["fmtp"])
@@ -505,13 +506,16 @@ func (client *RtspClient) handleDescribe(res *RtspResponse) (err error) {
             continue
         }
         track.OpenTrack()
-        client.tracks[media.MediaType] = track
+        tracks[media.MediaType] = track
         media.ControlUrl, err = getControlURL(media.ControlUrl)
         if err != nil {
             return err
         }
     }
 
+    client.sdpContext = description
+    client.tracks = tracks
+    client.setupStep = 0
     if client.handle != nil {
         if err := client.handle.HandleDescribe(client, *res, client.sdpContext, client.tracks); err != nil {
             return err

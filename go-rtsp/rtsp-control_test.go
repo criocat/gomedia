@@ -344,3 +344,27 @@ func TestRTSPPlaySendsConfiguredHeadersAndResumes(t *testing.T) {
 		t.Errorf("resumed client state = %d, want Playing", client.state)
 	}
 }
+
+func TestRTSPReplacesSDPAfterTeardown(t *testing.T) {
+	handler := &controlTestLifecycle{}
+	client, sent := startControlTestClient(t, handler, controlTestSDP+"a=control:old-audio\r\n")
+	feedControlMessage(t, client, controlTestSetupOK)
+	feedControlMessage(t, client, "RTSP/1.0 200 OK\r\nCSeq: 4\r\nSession: 12345678\r\n\r\n")
+	if err := client.TearDown(); err != nil {
+		t.Fatal(err)
+	}
+	feedControlMessage(t, client, "RTSP/1.0 200 OK\r\nCSeq: 5\r\nSession: 12345678\r\n\r\n")
+
+	if err := client.Start(); err != nil {
+		t.Fatal(err)
+	}
+	feedControlMessage(t, client, "RTSP/1.0 200 OK\r\nCSeq: 6\r\nPublic: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN\r\n\r\n")
+	description := controlTestSDP + "a=control:new-audio\r\n"
+	feedControlMessage(t, client, fmt.Sprintf("RTSP/1.0 200 OK\r\nCSeq: 7\r\nContent-Base: rtsp://localhost/source/\r\nContent-Length: %d\r\n\r\n%s", len(description), description))
+	if len(*sent) != 8 || !strings.HasPrefix((*sent)[7], "SETUP rtsp://localhost/source/new-audio RTSP/1.0\r\n") {
+		t.Errorf("expected SETUP for new-audio, got %q", *sent)
+	}
+	if len(client.sdpContext.Medias) != 1 || len(client.tracks) != 1 {
+		t.Errorf("new description contains %d media sections and %d tracks, want 1 each", len(client.sdpContext.Medias), len(client.tracks))
+	}
+}
