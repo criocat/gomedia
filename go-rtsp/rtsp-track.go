@@ -1,6 +1,7 @@
 package rtsp
 
 import (
+    "encoding/binary"
     "fmt"
     "math/rand"
     "sync/atomic"
@@ -261,6 +262,29 @@ func (track *RtspTrack) Input(data []byte, isRtcp bool) error {
         return track.inputRtcp(data)
     }
     return track.unpack.UnPack(data)
+}
+
+func readInterleavedPacket(packet []byte, tracks map[string]*RtspTrack) (int, error) {
+    const headerSize = 4
+    if len(packet) < headerSize {
+        return 0, errNeedMore
+    }
+    end := headerSize + int(binary.BigEndian.Uint16(packet[2:]))
+    if len(packet) < end {
+        return 0, errNeedMore
+    }
+    channel := int(packet[1])
+    for _, track := range tracks {
+        transport := track.transport
+        if transport == nil || transport.Proto != TCP {
+            continue
+        }
+        isRtcp := transport.Interleaved[1] == channel
+        if transport.Interleaved[0] == channel || isRtcp {
+            return end, track.Input(packet[headerSize:end], isRtcp)
+        }
+    }
+    return end, nil
 }
 
 func (track *RtspTrack) inputRtcp(data []byte) error {

@@ -157,7 +157,7 @@ func (client *RtspClient) Input(data []byte) (err error) {
     for len(buf) > 0 {
         ret := 0
         if buf[0] == '$' {
-            ret, err = client.handlRtpOverRtsp(buf)
+            ret, err = readInterleavedPacket(buf, client.tracks)
         } else {
             ret, err = client.handleRtspMessage(buf)
         }
@@ -296,30 +296,6 @@ func (client *RtspClient) sendToServer(data []byte) error {
         return client.output(data)
     }
     return nil
-}
-
-func (client *RtspClient) handlRtpOverRtsp(packet []byte) (ret int, err error) {
-    if len(packet) < 4 {
-        return 0, errNeedMore
-    }
-    channel := packet[1]
-    length := binary.BigEndian.Uint16(packet[2:])
-    if len(packet)-4 < int(length) {
-        return 0, errNeedMore
-    }
-
-    for _, track := range client.tracks {
-        isRtcp := false
-        if track.transport.Interleaved[1] == int(channel) {
-            isRtcp = true
-        }
-
-        if track.transport.Interleaved[0] == int(channel) || isRtcp {
-            return 4 + int(length), track.Input(packet[4:4+length], isRtcp)
-        }
-    }
-    //improve compatibility
-    return 4 + int(length), nil
 }
 
 func (client *RtspClient) handleRtspMessage(msg []byte) (int, error) {
