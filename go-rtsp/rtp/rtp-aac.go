@@ -94,6 +94,15 @@ type AACUnPacker struct {
     duration         uint32
     constantDuration uint32
     asc              []byte
+    fragment         aacRTPFragment
+}
+
+type aacRTPFragment struct {
+    data      []byte
+    size      uint64
+    ssrc      uint32
+    timestamp uint32
+    sequence  uint16
 }
 
 func NewAACUnPacker(sizeLength int, indexLength int, asc []byte) *AACUnPacker {
@@ -161,24 +170,73 @@ func (unpacker *AACUnPacker) UnPack(pkt []byte) error {
             }
             timestamp += step * duration
         }
+        if count == 1 && len(payload) > 0 && size > uint64(len(payload)) {
+            return unpacker.appendFragment(pkg.Header, payload, size)
+        }
+        unpacker.fragment = aacRTPFragment{}
         if size == 0 || size > uint64(len(payload)) {
             return errors.New("incomplete AAC access unit")
         }
-        var adts []byte
-        if len(unpacker.asc) > 0 {
-            if size > 8191-7 {
-                return errors.New("AAC access unit too large for ADTS")
-            }
-            adtsHdr, err := codec.ConvertASCToADTS(unpacker.asc, int(size)+7)
-            if err != nil {
-                return err
-            }
-            adts = adtsHdr.Encode()
-        }
-        if unpacker.onFrame != nil {
-            unpacker.onFrame(append(adts, payload[:size]...), timestamp, false)
+        if err := unpacker.emitAccessUnit(payload[:size], timestamp); err != nil {
+            return err
         }
         payload = payload[size:]
+    }
+    return nil
+}
+
+func (unpacker *AACUnPacker) appendFragment(header RtpHdr, data []byte, size uint64) error {
+    part := &unpacker.fragment
+    if len(unpacker.asc) > 0 && size > 8191-7 {
+        *part = aacRTPFragment{}
+        return errors.New("AAC access unit too large for ADTS")
+    }
+    if len(part.data) > 0 {
+        sameUnit := part.size == size && part.ssrc == header.SSRC && part.timestamp == header.Timestamp
+        if sameUnit && part.sequence == header.SequenceNumber {
+            return nil
+        }
+        if !sameUnit || part.sequence+1 != header.SequenceNumber {
+            *part = aacRTPFragment{}
+        }
+    }
+    if len(part.data) == 0 {
+        if header.Marker != 0 {
+            return nil // The start of this access unit was lost.
+        }
+        part.size, part.ssrc, part.timestamp = size, header.SSRC, header.Timestamp
+    }
+    if uint64(len(part.data))+uint64(len(data)) > size {
+        *part = aacRTPFragment{}
+        return errors.New("AAC fragments exceed access unit size")
+    }
+    part.sequence = header.SequenceNumber
+    part.data = append(part.data, data...)
+    if header.Marker == 0 {
+        return nil
+    }
+    frame := part.data
+    *part = aacRTPFragment{}
+    if uint64(len(frame)) != size {
+        return nil
+    }
+    return unpacker.emitAccessUnit(frame, header.Timestamp)
+}
+
+func (unpacker *AACUnPacker) emitAccessUnit(frame []byte, timestamp uint32) error {
+    var adts []byte
+    if len(unpacker.asc) > 0 {
+        if len(frame) > 8191-7 {
+            return errors.New("AAC access unit too large for ADTS")
+        }
+        header, err := codec.ConvertASCToADTS(unpacker.asc, len(frame)+7)
+        if err != nil {
+            return err
+        }
+        adts = header.Encode()
+    }
+    if unpacker.onFrame != nil {
+        unpacker.onFrame(append(adts, frame...), timestamp, false)
     }
     return nil
 }

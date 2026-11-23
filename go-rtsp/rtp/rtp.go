@@ -91,24 +91,28 @@ func (pkg *RtpPacket) Decode(data []byte) error {
     }
 
     data = data[offset:]
+    var extensions, padding []byte
     if pkg.Header.ExtensionFlag > 0 {
         if len(data) < 4 {
             return errors.New("rtp extension need 4 bytes at least")
         }
-        length := binary.BigEndian.Uint16(data[2:])
-        if len(data)-4 < int(length)*4 {
+        length := 4 + int(binary.BigEndian.Uint16(data[2:]))*4
+        if len(data) < length {
             return errors.New("rtp extension need more bytes")
         }
-        pkg.Extensions = data[:4+4*length]
-        data = data[4+4*length:]
+        extensions = data[:length]
+        data = data[length:]
     }
     if pkg.Header.PaddingFlag > 0 {
         if len(data) == 0 || int(data[len(data)-1]) > len(data) {
             return errors.New("rtp padding need more bytes")
         }
-        pkg.Padding = data[len(data)-int(data[len(data)-1]):]
-        data = data[:len(data)-int(data[len(data)-1])]
+        length := int(data[len(data)-1])
+        padding = data[len(data)-length:]
+        data = data[:len(data)-length]
     }
+    pkg.Extensions = extensions
+    pkg.Padding = padding
     pkg.Payload = data
     return nil
 }
