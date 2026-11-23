@@ -290,7 +290,7 @@ func (chs *clientHandShake) input(data []byte) (int, error) {
             chs.cache = append(chs.cache, data[:length]...)
             data = data[length:]
             var c2 []byte
-            if chs.simpleHs {
+            if chs.simpleHs || binary.BigEndian.Uint32(chs.cache[4:8]) == 0 {
                 c2 = makeC2(chs.cache)
             } else {
                 c2 = makeComplexC2(chs.cache, chs.schema)
@@ -339,7 +339,7 @@ func newServerHandShake() *serverHandShake {
     }
 }
 
-func (shs *serverHandShake) input(data []byte) (readBytes int) {
+func (shs *serverHandShake) input(data []byte) (readBytes int, err error) {
     for len(data) > 0 {
         switch shs.state {
         case SERVER_C0:
@@ -369,9 +369,11 @@ func (shs *serverHandShake) input(data []byte) (readBytes int) {
                 s0s1s2 = append(s0s1s2, makeComplexS1(shs.schema)...)
                 s0s1s2 = append(s0s1s2, makeComplexS2(shs.cache, shs.schema)...)
             }
-            shs.output(s0s1s2)
             shs.cache = shs.cache[:0]
             shs.state = SERVER_C2
+            if err := shs.output(s0s1s2); err != nil {
+                return readBytes, err
+            }
         case SERVER_C2:
             if len(data)+len(shs.cache) < 1536 {
                 shs.cache = append(shs.cache, data...)
@@ -382,13 +384,13 @@ func (shs *serverHandShake) input(data []byte) (readBytes int) {
             readBytes += length
             shs.state = HANDSHAKE_DONE
             shs.cache = nil
-            return readBytes
+            return readBytes, nil
         default:
             panic("error state")
         }
     }
 
-    return readBytes
+    return readBytes, nil
 }
 
 func (shs *serverHandShake) getState() HandShakeState {

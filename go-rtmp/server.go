@@ -194,7 +194,10 @@ func (server *RtmpServerHandle) Input(data []byte) error {
         switch server.state {
         case HandShake:
             server.changeState(STATE_HANDSHAKEING)
-            r := server.hs.input(data)
+            r, err := server.hs.input(data)
+            if err != nil {
+                return err
+            }
             if server.hs.getState() == HANDSHAKE_DONE {
                 server.changeState(STATE_HANDSHAKE_DONE)
                 server.state = ReadChunk
