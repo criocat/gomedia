@@ -68,10 +68,55 @@ type AVTagMuxer interface {
     Write(frames []byte, pts uint32, dts uint32) [][]byte
 }
 
+type videoTagMuxer interface {
+    writeTags(frames []byte, pts, dts uint32, output func([]byte) error) error
+}
+
+// WriteVideoTags sends the tags produced by an AVC or HEVC muxer in order.
+// If output rejects a sequence header, the muxer retries it before the next
+// coded frame. Retrying requires that output rejected the entire tag.
+func WriteVideoTags(muxer AVTagMuxer, frames []byte, pts, dts uint32, output func([]byte) error) error {
+    video, ok := muxer.(videoTagMuxer)
+    if !ok {
+        return errors.New("unsupported video tag muxer")
+    }
+    return video.writeTags(frames, pts, dts, output)
+}
+
+func collectVideoTags(muxer videoTagMuxer, frames []byte, pts, dts uint32) [][]byte {
+    var tags [][]byte
+    _ = muxer.writeTags(frames, pts, dts, func(tag []byte) error {
+        tags = append(tags, tag)
+        return nil
+    })
+    return tags
+}
+
+type videoTagOutput struct {
+    pendingSequence []byte
+}
+
+func (state *videoTagOutput) write(sequence, codedFrame []byte, output func([]byte) error) error {
+    if sequence != nil {
+        state.pendingSequence = sequence
+    }
+    if state.pendingSequence != nil {
+        if err := output(state.pendingSequence); err != nil {
+            return err
+        }
+        state.pendingSequence = nil
+    }
+    if codedFrame != nil {
+        return output(codedFrame)
+    }
+    return nil
+}
+
 type AVCMuxer struct {
     spsset map[uint64][]byte
     ppsset map[uint64][]byte
     cache  []byte
+    output videoTagOutput
 }
 
 func NewAVCMuxer() *AVCMuxer {
@@ -83,6 +128,10 @@ func NewAVCMuxer() *AVCMuxer {
 }
 
 func (muxer *AVCMuxer) Write(frames []byte, pts uint32, dts uint32) [][]byte {
+    return collectVideoTags(muxer, frames, pts, dts)
+}
+
+func (muxer *AVCMuxer) writeTags(frames []byte, pts, dts uint32, output func([]byte) error) error {
     var vcl bool = false
     var isKey bool = false
     configurationChanged := false
@@ -118,7 +167,7 @@ func (muxer *AVCMuxer) Write(frames []byte, pts uint32, dts uint32) [][]byte {
         }
         return true
     })
-    var tags [][]byte
+    var sequence, codedFrame []byte
     if configurationChanged && len(muxer.ppsset) > 0 && len(muxer.spsset) > 0 {
         spss := make([][]byte, 0, len(muxer.spsset))
         for _, sps := range muxer.spsset {
@@ -129,20 +178,21 @@ func (muxer *AVCMuxer) Write(frames []byte, pts uint32, dts uint32) [][]byte {
             ppss = append(ppss, pps)
         }
         extraData, _ := codec.CreateH264AVCCExtradata(spss, ppss)
-        tags = append(tags, WriteVideoTag(extraData, true, FLV_AVC, 0, true))
+        sequence = WriteVideoTag(extraData, true, FLV_AVC, 0, true)
     }
 
     if vcl {
-        tags = append(tags, WriteVideoTag(muxer.cache, isKey, FLV_AVC, int32(pts-dts), false))
+        codedFrame = WriteVideoTag(muxer.cache, isKey, FLV_AVC, int32(pts-dts), false)
         muxer.cache = muxer.cache[:0]
     }
-    return tags
+    return muxer.output.write(sequence, codedFrame, output)
 }
 
 type HevcMuxer struct {
     parameterSets []byte
     cache         []byte
-    sequenceSent  bool
+    hasSequence   bool
+    output        videoTagOutput
 }
 
 func NewHevcMuxer() *HevcMuxer {
@@ -152,6 +202,10 @@ func NewHevcMuxer() *HevcMuxer {
 }
 
 func (muxer *HevcMuxer) Write(frames []byte, pts uint32, dts uint32) [][]byte {
+    return collectVideoTags(muxer, frames, pts, dts)
+}
+
+func (muxer *HevcMuxer) writeTags(frames []byte, pts, dts uint32, output func([]byte) error) error {
     var vcl bool = false
     var isKey bool = false
     var updates [][]byte
@@ -172,24 +226,24 @@ func (muxer *HevcMuxer) Write(frames []byte, pts uint32, dts uint32) [][]byte {
         muxer.cache = appendHEVCNAL(muxer.cache, nalu)
         return true
     })
-    var tags [][]byte
+    var sequence, codedFrame []byte
     var configurationChanged bool
     muxer.parameterSets, configurationChanged = mergeHEVCParameterSets(muxer.parameterSets, updates)
     if configurationChanged {
         if extraData, err := encodeHEVCConfiguration(muxer.parameterSets); err == nil {
-            tags = append(tags, WriteVideoTag(extraData, true, FLV_HEVC, 0, true))
-            muxer.sequenceSent = true
+            sequence = WriteVideoTag(extraData, true, FLV_HEVC, 0, true)
+            muxer.hasSequence = true
         }
     }
     if vcl {
-        if muxer.sequenceSent {
-            tags = append(tags, WriteVideoTag(muxer.cache, isKey, FLV_HEVC, int32(pts-dts), false))
+        if muxer.hasSequence {
+            codedFrame = WriteVideoTag(muxer.cache, isKey, FLV_HEVC, int32(pts-dts), false)
         }
         // Drop an early frame if VPS/SPS/PPS are still missing. Do not merge
         // it into a later access unit with a different timestamp.
         muxer.cache = muxer.cache[:0]
     }
-    return tags
+    return muxer.output.write(sequence, codedFrame, output)
 }
 
 func CreateVideoMuxer(cid FLV_VIDEO_CODEC_ID) AVTagMuxer {
@@ -393,7 +447,9 @@ func (muxer *FlvMuxer) writeFrames(frameType TagType, frames []byte, pts uint32,
         }
         tags = muxer.audioMuxer.Write(frames, pts, dts)
     } else if frameType == VIDEO_TAG {
-        tags = muxer.videoMuxer.Write(frames, pts, dts)
+        return WriteVideoTags(muxer.videoMuxer, frames, pts, dts, func(tag []byte) error {
+            return writeTag(tag, dts)
+        })
     } else {
         return errors.New("unsupport Frame Type")
     }

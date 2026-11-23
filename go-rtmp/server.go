@@ -258,16 +258,9 @@ func (server *RtmpServerHandle) WriteVideo(cid codec.CodecID, frame []byte, pts,
         server.videoChan = newChunkStreamWriter(CHUNK_CHANNEL_VIDEO)
         server.videoChan.chunkSize = server.writeChunkSize
     }
-    tags := server.videoMuxer.Write(frame, pts, dts)
-    for _, tag := range tags {
-        pkt := server.videoChan.writeData(tag, VIDEO, server.streamId, dts)
-        if len(pkt) > 0 {
-            if err := server.output(pkt); err != nil {
-                return err
-            }
-        }
-    }
-    return nil
+    return flv.WriteVideoTags(server.videoMuxer, frame, pts, dts, func(tag []byte) error {
+        return server.videoChan.sendMessage(tag, VIDEO, server.streamId, dts, server.output)
+    })
 }
 
 func (server *RtmpServerHandle) changeState(newState RtmpState) {

@@ -317,19 +317,7 @@ func (f *FlvWriter) WriteAAC(data []byte, pts uint32, dts uint32) error {
             panic("audio codec change")
         }
     }
-    return f.muxer.writeFrames(AUDIO_TAG, data, pts, dts, func(tag []byte) error {
-        var size [4]byte
-        binary.BigEndian.PutUint32(size[:], uint32(len(tag)))
-        tag = append(tag, size[:]...)
-        n, err := f.writer.Write(tag)
-        if err != nil {
-            return err
-        }
-        if n != len(tag) {
-            return io.ErrShortWrite
-        }
-        return nil
-    })
+    return f.muxer.writeFrames(AUDIO_TAG, data, pts, dts, f.writeTag)
 }
 
 func (f *FlvWriter) WriteG711A(data []byte, pts uint32, dts uint32) error {
@@ -407,17 +395,19 @@ func (f *FlvWriter) WriteH265(data []byte, pts uint32, dts uint32) error {
 }
 
 func (f *FlvWriter) writeVideo(data []byte, pts uint32, dts uint32) error {
-    if tags, err := f.muxer.WriteVideo(data, pts, dts); err != nil {
+    return f.muxer.writeFrames(VIDEO_TAG, data, pts, dts, f.writeTag)
+}
+
+func (f *FlvWriter) writeTag(tag []byte) error {
+    var size [4]byte
+    binary.BigEndian.PutUint32(size[:], uint32(len(tag)))
+    tag = append(tag, size[:]...)
+    n, err := f.writer.Write(tag)
+    if err != nil {
         return err
-    } else {
-        for _, tag := range tags {
-            if _, err := f.writer.Write(tag); err != nil {
-                return err
-            }
-            if err := f.writePreviousTagSize(uint32(len(tag))); err != nil {
-                return err
-            }
-        }
+    }
+    if n != len(tag) {
+        return io.ErrShortWrite
     }
     return nil
 }

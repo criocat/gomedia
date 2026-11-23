@@ -261,16 +261,9 @@ func (cli *RtmpClient) WriteVideo(cid codec.CodecID, frame []byte, pts, dts uint
 		cli.videoChan = newChunkStreamWriter(CHUNK_CHANNEL_VIDEO)
 		cli.videoChan.chunkSize = cli.writeChunkSize
 	}
-	tags := cli.videoMuxer.Write(frame, pts, dts)
-	for _, tag := range tags {
-		pkt := cli.videoChan.writeData(tag, VIDEO, cli.streamId, dts)
-		if len(pkt) > 0 {
-			if err := cli.output(pkt); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return flv.WriteVideoTags(cli.videoMuxer, frame, pts, dts, func(tag []byte) error {
+		return cli.videoChan.sendMessage(tag, VIDEO, cli.streamId, dts, cli.output)
+	})
 }
 
 func (cli *RtmpClient) changeState(newState RtmpState) {
