@@ -58,3 +58,21 @@ func TestRTCPDoesNotReportLossBeforeRTPValidation(t *testing.T) {
 	ctx.ReceivedRtp(&rtp.RtpPacket{Header: rtp.RtpHdr{SSRC: sender, SequenceNumber: 10001}})
 	check(10001)
 }
+
+func TestRTCPResetsJitterAfterRTPRestart(t *testing.T) {
+	ctx := NewRtcpContext(1, 9999, 90000)
+	receive := func(sequence uint16, timestamp uint32) {
+		ctx.ReceivedRtp(&rtp.RtpPacket{Header: rtp.RtpHdr{
+			SSRC: 7, SequenceNumber: sequence, Timestamp: timestamp,
+		}})
+	}
+	receive(9999, 9000)
+	receive(10000, 12000)
+	receive(0, 0x40000000)
+	receive(1, 0x40000000+3000)
+
+	block := ctx.GenerateRR().Blocks[0]
+	if block.ExtendHighestSeq != 1 || block.Jitter != 0 {
+		t.Errorf("sequence=%d jitter=%d after restart, want sequence=1 and zero jitter", block.ExtendHighestSeq, block.Jitter)
+	}
+}

@@ -71,3 +71,38 @@ func TestReportsEncodeTheirBlockCount(t *testing.T) {
 		})
 	}
 }
+
+func TestRTCPCumulativeLossFitsSigned24Bits(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		cycles   uint32
+		received uint32
+		want     uint32
+	}{
+		{"ordinary loss", 0, 1, 1},
+		{"duplicate", 0, 3, 0xffffff},
+		{"positive overflow", 0x01000000, 2, 0x7fffff},
+		{"negative overflow", 0, 0x01000002, 0x800000},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := NewRtcpContext(1, 10, 90000)
+			ctx.initSeq(10)
+			ctx.probation = 0
+			ctx.maxSeq = 11
+			ctx.cycles = tt.cycles
+			ctx.received = tt.received
+
+			report := ctx.GenerateRR()
+			if got := report.Blocks[0].Lost; got != tt.want {
+				t.Errorf("reported loss = %#x, want %#x", got, tt.want)
+			}
+			var decoded ReceiverReport
+			if err := decoded.Decode(report.Encode()); err != nil {
+				t.Fatal(err)
+			}
+			if got := decoded.Blocks[0].Lost; got != tt.want {
+				t.Errorf("decoded loss = %#x, want %#x", got, tt.want)
+			}
+		})
+	}
+}

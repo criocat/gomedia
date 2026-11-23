@@ -115,8 +115,6 @@ func (ctx *RtcpContext) ReceivedRtp(pkt *rtp.RtpPacket) {
     ctx.rtpSSRC = pkt.Header.SSRC
     rtpClock := uint64(time.Now().UnixNano() / 1000)
     if ctx.lastRtpClock == 0 {
-        ctx.lastRtpClock = uint64(time.Now().UnixNano() / 1000)
-        ctx.lastRtpTimestamp = pkt.Header.Timestamp
         ctx.jitter = 0
     } else {
         arrivalDelta := int64((rtpClock - ctx.lastRtpClock) * uint64(ctx.sampleRate) / 1000000)
@@ -171,7 +169,15 @@ func (ctx *RtcpContext) getReportBlock() ReportBlock {
     if ctx.probation == 0 {
         rb.ExtendHighestSeq = ctx.cycles + uint32(ctx.maxSeq)
         expected := rb.ExtendHighestSeq - ctx.baseSeq + 1
-        rb.Lost = expected - ctx.received
+        loss := int64(expected) - int64(ctx.received)
+        const minLoss = -(1 << 23)
+        const maxLoss = (1 << 23) - 1
+        if loss < minLoss {
+            loss = minLoss
+        } else if loss > maxLoss {
+            loss = maxLoss
+        }
+        rb.Lost = uint32(loss) & 0xffffff
         expectedInterval := expected - ctx.expectPrior
         ctx.expectPrior = expected
         receivedInterval := ctx.received - ctx.receivedPrior
@@ -205,4 +211,5 @@ func (ctx *RtcpContext) initSeq(seq uint16) {
     ctx.received = 0
     ctx.receivedPrior = 0
     ctx.expectPrior = 0
+    ctx.lastRtpClock = 0
 }
