@@ -32,6 +32,7 @@ type tsstream struct {
     continuity    uint8
     hasContinuity bool
     inPES         bool
+    pesHeader     []byte
     pesBytesLeft  int // -1 when the PES packet length is unspecified.
 }
 
@@ -195,6 +196,7 @@ func (stream *tsstream) dropIncompletePES() {
         stream.pkg = nil
     }
     stream.inPES = false
+    stream.pesHeader = nil
     stream.pesBytesLeft = 0
 }
 
@@ -219,17 +221,32 @@ func (demuxer *TSDemuxer) readPES(stream *tsstream, packet *TSPacket, payload []
     stream.hasContinuity = true
 
     start := packet.Payload_unit_start_indicator
-    pes := stream.pes_pkg
     if start == 1 {
         if stream.pesBytesLeft > 0 {
             stream.dropIncompletePES()
         }
+        stream.inPES = false
+        stream.pesHeader = nil
+        stream.pesBytesLeft = 0
+    } else if len(stream.pesHeader) > 0 {
+        payload = append(stream.pesHeader, payload...)
+        start = 1
+    }
+
+    pes := stream.pes_pkg
+    if start == 1 {
         pes.Pes_payload = nil
         err := pes.Decode(codec.NewBitStream(payload))
-        // The PES header is available even when the payload spans several packets.
-        if err != nil && !(errors.Is(err, errNeedMore) && pes.Pes_payload != nil) {
-            return err
+        if err != nil {
+            if !errors.Is(err, errNeedMore) {
+                return err
+            }
+            if pes.Pes_payload == nil {
+                stream.pesHeader = append(stream.pesHeader[:0], payload...)
+                return nil
+            }
         }
+        stream.pesHeader = nil
         stream.inPES = true
         stream.pesBytesLeft = -1
         if pes.PES_packet_length != 0 {
@@ -306,31 +323,34 @@ func (demuxer *TSDemuxer) probe(r io.Reader) ([]byte, error) {
         return buf, nil
     }
     buf = buf[:2*TS_PAKCET_SIZE]
-    if _, err := io.ReadFull(r, buf[TS_PAKCET_SIZE:]); err != nil {
-        return nil, err
-    }
-LOOP:
-    i := 0
-    for ; i < TS_PAKCET_SIZE; i++ {
-        if buf[i] == 0x47 && buf[i+TS_PAKCET_SIZE] == 0x47 {
-            break
+    for {
+        n, err := io.ReadFull(r, buf[TS_PAKCET_SIZE:])
+        if err != nil {
+            if (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) && buf[n] == 0x47 {
+                // The last complete packet ends at EOF, so a second sync
+                // byte is unavailable to confirm alignment.
+                return buf[n : n+TS_PAKCET_SIZE], err
+            }
+            return nil, err
         }
-    }
-    if i == 0 {
-        return buf, nil
-    } else if i < TS_PAKCET_SIZE {
-        copy(buf, buf[i:])
-        if _, err := io.ReadFull(r, buf[2*TS_PAKCET_SIZE-i:]); err != nil {
-            return buf[:TS_PAKCET_SIZE], err
-        } else {
+
+        i := 0
+        for ; i < TS_PAKCET_SIZE; i++ {
+            if buf[i] == 0x47 && buf[i+TS_PAKCET_SIZE] == 0x47 {
+                break
+            }
+        }
+        if i == 0 {
             return buf, nil
         }
-    } else {
-        copy(buf, buf[TS_PAKCET_SIZE:])
-        if _, err := io.ReadFull(r, buf[TS_PAKCET_SIZE:]); err != nil {
-            return buf[:TS_PAKCET_SIZE], err
+        if i < TS_PAKCET_SIZE {
+            copy(buf, buf[i:])
+            if _, err := io.ReadFull(r, buf[2*TS_PAKCET_SIZE-i:]); err != nil {
+                return buf[:TS_PAKCET_SIZE], err
+            }
+            return buf, nil
         }
-        goto LOOP
+        copy(buf, buf[TS_PAKCET_SIZE:])
     }
 }
 
