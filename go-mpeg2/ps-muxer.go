@@ -3,15 +3,15 @@ package mpeg2
 import "github.com/yapingcat/gomedia/go-codec"
 
 type PSMuxer struct {
-    system     *System_header
-    psm        *Program_stream_map
-    OnPacket   func(pkg []byte)
-    firstframe bool
+    system        *System_header
+    psm           *Program_stream_map
+    OnPacket      func(pkg []byte)
+    tablesPending bool
 }
 
 func NewPsMuxer() *PSMuxer {
     muxer := new(PSMuxer)
-    muxer.firstframe = true
+    muxer.tablesPending = true
     muxer.system = new(System_header)
     muxer.system.Rate_bound = 26234
     muxer.psm = new(Program_stream_map)
@@ -22,6 +22,7 @@ func NewPsMuxer() *PSMuxer {
 }
 
 func (muxer *PSMuxer) AddStream(cid PS_STREAM_TYPE) uint8 {
+    muxer.tablesPending = true
     if cid == PS_STREAM_H265 || cid == PS_STREAM_H264 {
         es := NewElementary_Stream(uint8(PES_STREAM_VIDEO) + muxer.system.Video_bound)
         es.P_STD_buffer_bound_scale = 1
@@ -102,10 +103,10 @@ func (muxer *PSMuxer) Write(sid uint8, frame []byte, pts uint64, dts uint64) err
     pack.System_clock_reference_extension = 0
     pack.Program_mux_rate = 6106
     pack.Encode(bsw)
-    if muxer.firstframe || idr_flag {
+    if muxer.tablesPending || idr_flag {
         muxer.system.Encode(bsw)
         muxer.psm.Encode(bsw)
-        muxer.firstframe = false
+        muxer.tablesPending = false
     }
     pespkg := NewPesPacket()
     for len(frame) > 0 {

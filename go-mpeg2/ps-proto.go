@@ -386,6 +386,7 @@ func (psm *Program_stream_map) PrettyPrint(file *os.File) {
 }
 
 func (psm *Program_stream_map) Encode(bsw *codec.BitStreamWriter) {
+    start := bsw.ByteOffset()
     bsw.PutBytes([]byte{0x00, 0x00, 0x01, 0xBC})
     loc := bsw.ByteOffset()
     bsw.PutUint16(psm.Program_stream_map_length, 16)
@@ -405,7 +406,7 @@ func (psm *Program_stream_map) Encode(bsw *codec.BitStreamWriter) {
     }
     length := bsw.DistanceFromMarkDot()/8 + 4
     bsw.SetUint16(uint16(length), loc)
-    crc := codec.CalcCrc32(0xffffffff, bsw.Bits()[bsw.ByteOffset()-int(length-4)-4:bsw.ByteOffset()])
+    crc := codec.CalcCrc32(0xffffffff, bsw.Bits()[start:bsw.ByteOffset()])
     tmpcrc := make([]byte, 4)
     binary.LittleEndian.PutUint32(tmpcrc, crc)
     bsw.PutBytes(tmpcrc)
