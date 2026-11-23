@@ -118,9 +118,11 @@ func (pkg *RtpPacket) Decode(data []byte) error {
 }
 
 func (pkg *RtpPacket) Encode() []byte {
+    pkg.Header.ExtensionFlag = 0
     if len(pkg.Extensions) > 0 {
         pkg.Header.ExtensionFlag = 1
     }
+    pkg.Header.PaddingFlag = 0
     if len(pkg.Padding) > 0 {
         pkg.Header.PaddingFlag = 1
     }

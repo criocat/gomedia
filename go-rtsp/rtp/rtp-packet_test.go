@@ -32,6 +32,50 @@ func TestRTPDecodeClearsOptionsWhenReused(t *testing.T) {
 	}
 }
 
+func TestRTPEncodeClearsRemovedExtensionFlag(t *testing.T) {
+	packet := RtpPacket{
+		Header:     RtpHdr{PayloadType: 96, SequenceNumber: 7, SSRC: 42},
+		Extensions: []byte{0xbe, 0xde, 0, 1, 0x10, 0x42, 0, 0},
+		Payload:    []byte{1, 2, 3},
+	}
+	var parsed RtpPacket
+	if err := parsed.Decode(packet.Encode()); err != nil || len(parsed.Extensions) != len(packet.Extensions) {
+		t.Fatalf("read original extension: %v, %x", err, parsed.Extensions)
+	}
+
+	parsed.Extensions = nil
+	wire := parsed.Encode()
+	if wire[0]&0x10 != 0 {
+		t.Error("extension flag set without extension bytes")
+	}
+	var decoded RtpPacket
+	if err := decoded.Decode(wire); err != nil || !bytes.Equal(decoded.Payload, packet.Payload) {
+		t.Errorf("read payload after removing extension: %x, %v", decoded.Payload, err)
+	}
+}
+
+func TestRTPEncodeClearsRemovedPaddingFlag(t *testing.T) {
+	packet := RtpPacket{
+		Header:  RtpHdr{PayloadType: 96, SequenceNumber: 7, SSRC: 42},
+		Payload: []byte{1, 2, 3},
+		Padding: []byte{0, 0, 0, 4},
+	}
+	var parsed RtpPacket
+	if err := parsed.Decode(packet.Encode()); err != nil || len(parsed.Padding) != len(packet.Padding) {
+		t.Fatalf("read original padding: %v, %x", err, parsed.Padding)
+	}
+
+	parsed.Padding = nil
+	wire := parsed.Encode()
+	if wire[0]&0x20 != 0 {
+		t.Error("padding flag set without padding bytes")
+	}
+	var decoded RtpPacket
+	if err := decoded.Decode(wire); err != nil || !bytes.Equal(decoded.Payload, packet.Payload) {
+		t.Errorf("read payload after removing padding: %x, %v", decoded.Payload, err)
+	}
+}
+
 func TestRTPHeaderEncodesActualCSRCCount(t *testing.T) {
 	for _, count := range []int{2, 15, 16} {
 		sources := make([]uint32, count)
