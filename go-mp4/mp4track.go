@@ -121,12 +121,13 @@ func (extra *aacExtraData) load(data []byte) {
 }
 
 type movFragment struct {
-    offset   uint64
-    duration uint32
-    firstDts uint64
-    firstPts uint64
-    lastPts  uint64
-    lastDts  uint64
+    trafNumber uint32
+    offset     uint64
+    duration   uint32
+    firstDts   uint64
+    firstPts   uint64
+    lastPts    uint64
+    lastDts    uint64
 }
 
 type mp4track struct {

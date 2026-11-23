@@ -22,7 +22,7 @@ func NewMovieFragmentRandomAccessOffsetBox(size uint32) *MovieFragmentRandomAcce
 }
 
 func (mfro *MovieFragmentRandomAccessOffsetBox) Size() uint64 {
-	return mfro.Box.Size() + 4
+	return FullBoxLen + 4
 }
 
 func (mfro *MovieFragmentRandomAccessOffsetBox) Decode(r io.Reader) (offset int, err error) {
@@ -42,10 +42,4 @@ func (mfro *MovieFragmentRandomAccessOffsetBox) Encode() (int, []byte) {
 	offset, boxdata := mfro.Box.Encode()
 	binary.BigEndian.PutUint32(boxdata[offset:], mfro.SizeOfMfra)
 	return offset + 4, boxdata
-}
-
-func makeMfroBox(mfraSize uint32) []byte {
-	mfro := NewMovieFragmentRandomAccessOffsetBox(mfraSize + 16)
-	_, boxData := mfro.Encode()
-	return boxData
 }

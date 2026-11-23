@@ -3,6 +3,7 @@ package mp4
 import (
     "encoding/binary"
     "io"
+    "math/bits"
 )
 
 // aligned(8) class TrackFragmentRandomAccessBox
@@ -45,7 +46,29 @@ func NewTrackFragmentRandomAccessBox(trackid uint32) *TrackFragmentRandomAccessB
 }
 
 func (tfra *TrackFragmentRandomAccessBox) Size() uint64 {
-    return tfra.Box.Size() + 12 + uint64(tfra.NumberOfEntry)*19
+    return FullBoxLen + 12 + uint64(tfra.NumberOfEntry)*uint64(tfra.entrySize())
+}
+
+func (tfra *TrackFragmentRandomAccessBox) entrySize() int {
+    stampSize := 8
+    if tfra.Box.Version == 1 {
+        stampSize = 16
+    }
+    return stampSize + 3 + int(tfra.LengthSizeOfTrafNum+tfra.LengthSizeOfTrunNum+tfra.LengthSizeOfSampleNum)
+}
+
+func readTfraNumber(data []byte) uint32 {
+    var number uint32
+    for _, octet := range data {
+        number = number<<8 | uint32(octet)
+    }
+    return number
+}
+
+func writeTfraNumber(data []byte, number uint32, width int) int {
+    var encoded [4]byte
+    binary.BigEndian.PutUint32(encoded[:], number)
+    return copy(data, encoded[len(encoded)-width:])
 }
 
 func (tfra *TrackFragmentRandomAccessBox) Decode(r io.Reader) (offset int, err error) {
@@ -53,7 +76,10 @@ func (tfra *TrackFragmentRandomAccessBox) Decode(r io.Reader) (offset int, err e
         return
     }
 
-    needSize := tfra.Box.Box.Size - 12
+    if tfra.Box.Box.Size < FullBoxLen+12 {
+        return 0, io.ErrUnexpectedEOF
+    }
+    needSize := tfra.Box.Box.Size - FullBoxLen
     buf := make([]byte, needSize)
     if _, err = io.ReadFull(r, buf); err != nil {
         return 0, err
@@ -67,24 +93,35 @@ func (tfra *TrackFragmentRandomAccessBox) Decode(r io.Reader) (offset int, err e
     n += 4
     tfra.NumberOfEntry = binary.BigEndian.Uint32(buf[n:])
     n += 4
+    if uint64(tfra.NumberOfEntry) > uint64((len(buf)-n)/tfra.entrySize()) {
+        return 0, io.ErrUnexpectedEOF
+    }
+    trafWidth := int(tfra.LengthSizeOfTrafNum) + 1
+    trunWidth := int(tfra.LengthSizeOfTrunNum) + 1
+    sampleWidth := int(tfra.LengthSizeOfSampleNum) + 1
     tfra.FragEntrys = new(movtfra)
     tfra.FragEntrys.frags = make([]fragEntry, tfra.NumberOfEntry)
     for i := 0; i < int(tfra.NumberOfEntry); i++ {
+        entry := &tfra.FragEntrys.frags[i]
         if tfra.Box.Version == 1 {
-            tfra.FragEntrys.frags[i].time = binary.BigEndian.Uint64(buf[n:])
+            entry.time = binary.BigEndian.Uint64(buf[n:])
             n += 8
-            tfra.FragEntrys.frags[i].moofOffset = binary.BigEndian.Uint64(buf[n:])
+            entry.moofOffset = binary.BigEndian.Uint64(buf[n:])
             n += 8
         } else {
-            tfra.FragEntrys.frags[i].time = uint64(binary.BigEndian.Uint32(buf[n:]))
+            entry.time = uint64(binary.BigEndian.Uint32(buf[n:]))
             n += 4
-            tfra.FragEntrys.frags[i].moofOffset = uint64(binary.BigEndian.Uint32(buf[n:]))
+            entry.moofOffset = uint64(binary.BigEndian.Uint32(buf[n:]))
             n += 4
         }
-        n += int(tfra.LengthSizeOfTrafNum + tfra.LengthSizeOfTrunNum + tfra.LengthSizeOfSampleNum + 3)
+        entry.trafNumber = readTfraNumber(buf[n : n+trafWidth])
+        n += trafWidth
+        entry.trunNumber = readTfraNumber(buf[n : n+trunWidth])
+        n += trunWidth
+        entry.sampleNumber = readTfraNumber(buf[n : n+sampleWidth])
+        n += sampleWidth
     }
-    offset += 4
-    return
+    return offset + len(buf), nil
 }
 
 func (tfra *TrackFragmentRandomAccessBox) Encode() (int, []byte) {
@@ -92,7 +129,9 @@ func (tfra *TrackFragmentRandomAccessBox) Encode() (int, []byte) {
     offset, boxdata := tfra.Box.Encode()
     binary.BigEndian.PutUint32(boxdata[offset:], tfra.TrackID)
     offset += 4
-    binary.BigEndian.PutUint32(boxdata[offset:], 0)
+    widths := uint32(tfra.LengthSizeOfTrafNum)<<4 |
+        uint32(tfra.LengthSizeOfTrunNum)<<2 | uint32(tfra.LengthSizeOfSampleNum)
+    binary.BigEndian.PutUint32(boxdata[offset:], widths)
     offset += 4
     binary.BigEndian.PutUint32(boxdata[offset:], tfra.NumberOfEntry)
     offset += 4
@@ -108,26 +147,33 @@ func (tfra *TrackFragmentRandomAccessBox) Encode() (int, []byte) {
             binary.BigEndian.PutUint32(boxdata[offset:], uint32(tfra.FragEntrys.frags[i].moofOffset))
             offset += 4
         }
-        boxdata[offset] = 1
-        boxdata[offset+1] = 1
-        boxdata[offset+2] = 1
-        offset += 3
+        entry := tfra.FragEntrys.frags[i]
+        offset += writeTfraNumber(boxdata[offset:], entry.trafNumber, int(tfra.LengthSizeOfTrafNum)+1)
+        offset += writeTfraNumber(boxdata[offset:], entry.trunNumber, int(tfra.LengthSizeOfTrunNum)+1)
+        offset += writeTfraNumber(boxdata[offset:], entry.sampleNumber, int(tfra.LengthSizeOfSampleNum)+1)
     }
     return offset, boxdata
 }
 
 func makeTfraBox(track *mp4track) []byte {
     tfra := NewTrackFragmentRandomAccessBox(track.trackId)
-    tfra.LengthSizeOfSampleNum = 0
-    tfra.LengthSizeOfTrafNum = 0
-    tfra.LengthSizeOfTrunNum = 0
     tfra.NumberOfEntry = uint32(len(track.fragments))
     frags := make([]fragEntry, 0, len(track.fragments))
-    for i := 0; i < int(tfra.NumberOfEntry); i++ {
+    var maxTrafNumber uint32
+    for _, fragment := range track.fragments {
         frags = append(frags, fragEntry{
-            time:       track.fragments[i].firstPts,
-            moofOffset: track.fragments[i].offset,
+            time:         fragment.firstPts,
+            moofOffset:   fragment.offset,
+            trafNumber:   fragment.trafNumber,
+            trunNumber:   1,
+            sampleNumber: 1,
         })
+        if fragment.trafNumber > maxTrafNumber {
+            maxTrafNumber = fragment.trafNumber
+        }
+    }
+    if maxTrafNumber != 0 {
+        tfra.LengthSizeOfTrafNum = uint8((bits.Len32(maxTrafNumber) - 1) / 8)
     }
     entrys := &movtfra{
         frags: frags,

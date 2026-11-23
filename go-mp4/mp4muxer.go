@@ -2,6 +2,7 @@ package mp4
 
 import (
     "encoding/binary"
+    "errors"
     "io"
 )
 
@@ -323,23 +324,25 @@ func (muxer *Movmuxer) writeMoov(w io.Writer) (err error) {
 }
 
 func (muxer *Movmuxer) writeMfra() (err error) {
-    mfraSize := 0
+    mfro := NewMovieFragmentRandomAccessOffsetBox(0)
+    mfra := BasicBox{Type: [4]byte{'m', 'f', 'r', 'a'}, Size: BasicBoxLen + mfro.Size()}
     tfras := make([][]byte, len(muxer.tracks))
     for i := uint32(1); i < muxer.nextTrackId; i++ {
         tfras[i-1] = makeTfraBox(muxer.tracks[i])
-        mfraSize += len(tfras[i-1])
+        mfra.Size += uint64(len(tfras[i-1]))
     }
 
-    mfro := makeMfroBox(uint32(mfraSize) + 16)
-    mfraSize += len(mfro)
-    mfra := BasicBox{Type: [4]byte{'m', 'f', 'r', 'a'}}
-    mfra.Size = 8 + uint64(mfraSize)
+    if mfra.Size > uint64(^uint32(0)) {
+        return errors.New("MP4 fragment index exceeds 32-bit mfro size")
+    }
+    mfro.SizeOfMfra = uint32(mfra.Size)
+    _, mfroBox := mfro.Encode()
     offset, mfraBox := mfra.Encode()
     for _, tfra := range tfras {
         copy(mfraBox[offset:], tfra)
         offset += len(tfra)
     }
-    copy(mfraBox[offset:], mfro)
+    copy(mfraBox[offset:], mfroBox)
     _, err = muxer.writer.Write(mfraBox)
     return
 }
@@ -448,12 +451,13 @@ func (muxer *Movmuxer) flushFragment() (err error) {
             lastPts := muxer.tracks[i].samplelist[len(muxer.tracks[i].samplelist)-1].pts
             lastDts := muxer.tracks[i].samplelist[len(muxer.tracks[i].samplelist)-1].dts
             frag := movFragment{
-                offset:   uint64(moofOffset),
-                duration: muxer.tracks[i].duration,
-                firstDts: firstDts,
-                firstPts: firstPts,
-                lastPts:  lastPts,
-                lastDts:  lastDts,
+                trafNumber: i, // Each moof writes one traf per track, in this order.
+                offset:     uint64(moofOffset),
+                duration:   muxer.tracks[i].duration,
+                firstDts:   firstDts,
+                firstPts:   firstPts,
+                lastPts:    lastPts,
+                lastDts:    lastDts,
             }
             muxer.tracks[i].fragments = append(muxer.tracks[i].fragments, frag)
         }

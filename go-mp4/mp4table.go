@@ -95,8 +95,11 @@ type movstbl struct {
 }
 
 type fragEntry struct {
-    time       uint64
-    moofOffset uint64
+    time         uint64
+    moofOffset   uint64
+    trafNumber   uint32
+    trunNumber   uint32
+    sampleNumber uint32
 }
 
 type movtfra struct {
