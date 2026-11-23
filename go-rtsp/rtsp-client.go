@@ -189,12 +189,22 @@ func (client *RtspClient) Input(data []byte) (err error) {
     return
 }
 
-func (client *RtspClient) TearDown() (err error) {
-    return nil
+func (client *RtspClient) TearDown() error {
+    if client.sessionId == "" {
+        return errors.New("cannot TEARDOWN without an RTSP session")
+    }
+    request := makeTeardown(client.sessionControlURL(), client.cseq)
+    client.reponseHandler = client.handleTeardown
+    return client.sendRtspRequest(&request)
 }
 
-func (client *RtspClient) Pause() (err error) {
-    return nil
+func (client *RtspClient) Pause() error {
+    if client.sessionId == "" {
+        return errors.New("cannot PAUSE without an RTSP session")
+    }
+    request := makePause(client.sessionControlURL(), client.cseq)
+    client.reponseHandler = client.handlePause
+    return client.sendRtspRequest(&request)
 }
 
 func (client *RtspClient) Play() {
@@ -215,6 +225,18 @@ func (client *RtspClient) SetRange(timeRange RangeTime) {
 
 func (client *RtspClient) EnableRTCP() {
 
+}
+
+func (client *RtspClient) sessionControlURL() string {
+    if !client.isRecord && client.sdpContext != nil {
+        if client.sdpContext.ControlUrl != "" {
+            return client.sdpContext.ControlUrl
+        }
+        if len(client.sdpContext.Medias) == 1 && client.sdpContext.Medias[0].ControlUrl != "" {
+            return client.sdpContext.Medias[0].ControlUrl
+        }
+    }
+    return client.uri
 }
 
 func (client *RtspClient) KeepAlive(method string) error {
@@ -597,11 +619,7 @@ func (client *RtspClient) handleSetup(res *RtspResponse) error {
         req = &recordReq
         client.reponseHandler = client.handleRecord
     } else {
-        playURL := client.sdpContext.ControlUrl
-        if playURL == "" {
-            playURL = lastMedia.ControlUrl
-        }
-        playReq := makePlay(playURL, client.cseq)
+        playReq := makePlay(client.sessionControlURL(), client.cseq)
         req = &playReq
         client.reponseHandler = client.handlePlay
     }
@@ -638,6 +656,12 @@ func (client *RtspClient) handlePlay(res *RtspResponse) (err error) {
 }
 
 func (client *RtspClient) handleTeardown(res *RtspResponse) error {
+    if res.StatusCode == OK {
+        client.state = STATE_Init
+        client.sessionId = ""
+        client.timeout = 0
+        client.setupStep = 0
+    }
     if client.handle != nil {
         return client.handle.HandleTeardown(client, *res)
     }
@@ -645,6 +669,9 @@ func (client *RtspClient) handleTeardown(res *RtspResponse) error {
 }
 
 func (client *RtspClient) handlePause(res *RtspResponse) error {
+    if res.StatusCode == OK {
+        client.state = STATE_Ready
+    }
     if client.handle != nil {
         return client.handle.HandlePause(client, *res)
     }

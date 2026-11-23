@@ -254,3 +254,61 @@ func TestRTSPSkipsTracksRemovedByDescribeHandler(t *testing.T) {
 		t.Errorf("requests after successful SETUP = %q, want PLAY next", *sent)
 	}
 }
+
+type controlTestLifecycle struct {
+	controlTestClient
+	paused, closed int
+}
+
+func (handler *controlTestLifecycle) HandlePause(_ *RtspClient, response RtspResponse) error {
+	handler.paused = response.StatusCode
+	return nil
+}
+
+func (handler *controlTestLifecycle) HandleTeardown(_ *RtspClient, response RtspResponse) error {
+	handler.closed = response.StatusCode
+	return nil
+}
+
+func TestRTSPPauseAndTeardownLifecycle(t *testing.T) {
+	for _, test := range []struct {
+		name, sdp, url string
+	}{
+		{"aggregate", controlTestSDP, "rtsp://localhost/source"},
+		{"single_track", strings.Replace(controlTestSDP, "a=control:*\r\n", "", 1), "rtsp://localhost/source/audio"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler := &controlTestLifecycle{}
+			client, sent := startControlTestClient(t, handler, test.sdp+"a=control:audio\r\n")
+			feedControlMessage(t, client, controlTestSetupOK)
+			feedControlMessage(t, client, "RTSP/1.0 200 OK\r\nCSeq: 4\r\nSession: 12345678\r\n\r\n")
+			checkRequest := func(method string, count int) {
+				t.Helper()
+				if len(*sent) != count {
+					t.Fatalf("got %d RTSP requests, want %d after %s", len(*sent), count, method)
+				}
+				wire := (*sent)[count-1]
+				if !strings.HasPrefix(wire, method+" "+test.url+" RTSP/1.0\r\n") ||
+					!strings.Contains(wire, "\r\nSession: 12345678\r\n") {
+					t.Errorf("unexpected %s request: %q", method, wire)
+				}
+			}
+			if err := client.Pause(); err != nil {
+				t.Fatal(err)
+			}
+			checkRequest(PAUSE, 5)
+			feedControlMessage(t, client, "RTSP/1.0 200 OK\r\nCSeq: 5\r\nSession: 12345678\r\n\r\n")
+			if client.state != STATE_Ready || handler.paused != 200 {
+				t.Errorf("state = %d, pause status = %d, want Ready after OK", client.state, handler.paused)
+			}
+			if err := client.TearDown(); err != nil {
+				t.Fatal(err)
+			}
+			checkRequest(TEARDOWN, 6)
+			feedControlMessage(t, client, "RTSP/1.0 200 OK\r\nCSeq: 6\r\nSession: 12345678\r\n\r\n")
+			if client.state != STATE_Init || client.sessionId != "" || handler.closed != 200 {
+				t.Errorf("state = %d, session = %q, teardown status = %d", client.state, client.sessionId, handler.closed)
+			}
+		})
+	}
+}
