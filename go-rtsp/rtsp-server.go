@@ -160,12 +160,16 @@ func (server *RtspServer) handleRtspMessage(msg []byte) (int, error) {
     }
 }
 
-//TODO
-//server send request to client
-func (server *RtspServer) handleResponse(res []byte) (ret int, err error) {
-    response := RtspResponse{}
-    ret, err = response.parse(string(res))
-    return
+func (server *RtspServer) handleResponse(data []byte) (int, error) {
+    response := RtspResponse{Fileds: make(HeadFiled)}
+    consumed, err := response.parse(string(data))
+    if err != nil {
+        return consumed, err
+    }
+    if server.handle != nil {
+        server.handle.HandleResponse(server, response)
+    }
+    return consumed, nil
 }
 
 func (server *RtspServer) handleRequest(req []byte) (ret int, err error) {
@@ -348,7 +352,7 @@ func (server *RtspServer) handleUnAuth(request RtspRequest) error {
 
 func (server *RtspServer) sendRespones(req RtspRequest, res RtspResponse) error {
     res.Fileds[CSeq] = req.Fileds[CSeq]
-    res.Fileds[Date] = time.Now().UTC().Format("02 Jan 06 15:04:05 GMT")
+    res.Fileds[Date] = time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
     if server.output != nil {
         return server.output([]byte(res.Encode()))
     }
