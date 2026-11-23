@@ -76,6 +76,7 @@ type SPS struct {
 }
 
 func (sps *SPS) Decode(bs *BitStream) {
+	*sps = SPS{}
 	sps.Profile_idc = bs.Uint8(8)
 	sps.Constraint_set0_flag = bs.GetBit()
 	sps.Constraint_set1_flag = bs.GetBit()
@@ -98,13 +99,24 @@ func (sps *SPS) Decode(bs *BitStream) {
 		sps.Bit_depth_luma_minus8 = bs.ReadUE()   //bit_depth_luma_minus8
 		sps.Bit_depth_chroma_minus8 = bs.ReadUE() //bit_depth_chroma_minus8
 		bs.SkipBits(1)                            //qpprime_y_zero_transform_bypass_flag
-		seq_scaling_matrix_present_flag := bs.GetBit()
-		if seq_scaling_matrix_present_flag == 1 {
-			//seq_scaling_list_present_flag[i]
+		if bs.GetBit() == 1 { // seq_scaling_matrix_present_flag
+			listCount := 8
 			if sps.Chroma_format_idc == 3 {
-				bs.SkipBits(12)
-			} else {
-				bs.SkipBits(8)
+				listCount = 12
+			}
+			for list := 0; list < listCount; list++ {
+				if bs.GetBit() == 0 { // seq_scaling_list_present_flag
+					continue
+				}
+				size := 16
+				if list >= 6 {
+					size = 64
+				}
+				// Once nextScale is zero, the remaining entries have no deltas.
+				nextScale := int64(8)
+				for coefficient := 0; coefficient < size && nextScale != 0; coefficient++ {
+					nextScale = (nextScale + bs.ReadSE()) & 0xff
+				}
 			}
 		}
 	}
