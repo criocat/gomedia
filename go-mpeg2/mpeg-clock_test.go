@@ -41,6 +41,20 @@ func TestPESClockReference(t *testing.T) {
 	}
 }
 
+func TestMPEG1PESDecodesDTSFromItsOwnField(t *testing.T) {
+	// Time fields from a 90 kHz MPEG-1 video PES muxed by FFmpeg.
+	wire := []byte{0, 0, 1, 0xe0, 0, 14,
+		0x31, 0, 3, 0x7b, 0xb1, 0x11, 0, 3, 0x5f, 0x91,
+		0, 0, 1, 0xb3}
+	pes := NewPesPacket()
+	if err := pes.DecodeMpeg1(codec.NewBitStream(wire)); err != nil {
+		t.Fatal(err)
+	}
+	if pes.Pts != 48600 || pes.Dts != 45000 || !bytes.Equal(pes.Pes_payload, wire[16:]) {
+		t.Errorf("MPEG-1 PES PTS = %d, DTS = %d, payload = %x", pes.Pts, pes.Dts, pes.Pes_payload)
+	}
+}
+
 func TestTSMuxerPublishesPCRPIDBeforeSwitchingClock(t *testing.T) {
 	muxer := NewTSMuxer()
 	audio := muxer.AddStream(TS_STREAM_AAC)

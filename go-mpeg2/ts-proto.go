@@ -485,6 +485,10 @@ func (pat *Pat) Encode(bsw *codec.BitStreamWriter) {
 }
 
 func (pat *Pat) Decode(bs *codec.BitStream) error {
+    available := bs.RemainBytes()
+    if available < 12 {
+        return errNeedMore
+    }
     pat.Table_id = bs.Uint8(8)
     if pat.Table_id != uint8(TS_TID_PAS) {
         return errors.New("table id is Not TS_TID_PAS")
@@ -492,6 +496,12 @@ func (pat *Pat) Decode(bs *codec.BitStream) error {
     pat.Section_syntax_indicator = bs.Uint8(1)
     bs.SkipBits(3)
     pat.Section_length = bs.Uint16(12)
+    if pat.Section_length < 9 || (pat.Section_length-9)%4 != 0 {
+        return errors.New("invalid MPEG-TS PAT section length")
+    }
+    if int(pat.Section_length)+3 > available {
+        return errNeedMore
+    }
     pat.Transport_stream_id = bs.Uint16(16)
     bs.SkipBits(2)
     pat.Version_number = bs.Uint8(5)
@@ -608,6 +618,10 @@ func (pmt *Pmt) Encode(bsw *codec.BitStreamWriter) {
 }
 
 func (pmt *Pmt) Decode(bs *codec.BitStream) error {
+    available := bs.RemainBytes()
+    if available < 16 {
+        return errNeedMore
+    }
     pmt.Table_id = bs.Uint8(8)
     if pmt.Table_id != uint8(TS_TID_PMS) {
         return errors.New("table id is Not TS_TID_PAS")
@@ -615,6 +629,12 @@ func (pmt *Pmt) Decode(bs *codec.BitStream) error {
     pmt.Section_syntax_indicator = bs.Uint8(1)
     bs.SkipBits(3)
     pmt.Section_length = bs.Uint16(12)
+    if pmt.Section_length < 13 {
+        return errors.New("invalid MPEG-TS PMT section length")
+    }
+    if int(pmt.Section_length)+3 > available {
+        return errNeedMore
+    }
     pmt.Program_number = bs.Uint16(16)
     bs.SkipBits(2)
     pmt.Version_number = bs.Uint8(5)
@@ -625,10 +645,16 @@ func (pmt *Pmt) Decode(bs *codec.BitStream) error {
     pmt.PCR_PID = bs.Uint16(13)
     bs.SkipBits(4)
     pmt.Program_info_length = bs.Uint16(12)
-    //TODO N loop descriptors
+    remaining := int(pmt.Section_length) - 13 - int(pmt.Program_info_length)
+    if remaining < 0 {
+        return errors.New("PMT program descriptors exceed section")
+    }
     bs.SkipBits(int(pmt.Program_info_length) * 8)
     //fmt.Printf("section length %d pmt.Pogram_info_length=%d\n", pmt.Section_length, pmt.Pogram_info_length)
-    for i := 0; i < int(pmt.Section_length)-9-int(pmt.Program_info_length)-4; {
+    for remaining > 0 {
+        if remaining < 5 {
+            return errors.New("incomplete MPEG-TS PMT stream entry")
+        }
         tmp := StreamPair{
             StreamType:     0,
             Elementary_PID: 0,
@@ -639,10 +665,12 @@ func (pmt *Pmt) Decode(bs *codec.BitStream) error {
         tmp.Elementary_PID = bs.Uint16(13)
         bs.SkipBits(4)
         tmp.ES_Info_Length = bs.Uint16(12)
-        //TODO N loop descriptors
+        remaining -= 5 + int(tmp.ES_Info_Length)
+        if remaining < 0 {
+            return errors.New("PMT stream descriptors exceed section")
+        }
         bs.SkipBits(int(tmp.ES_Info_Length) * 8)
         pmt.Streams = append(pmt.Streams, tmp)
-        i += 5 + int(tmp.ES_Info_Length)
     }
     return nil
 }

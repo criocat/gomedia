@@ -267,11 +267,12 @@ func (pkg *PesPacket) DecodeMpeg1(bs *codec.BitStream) error {
         bs.SkipBits(1)
         pkg.Pts = pkg.Pts<<15 | bs.GetBits(15)
         bs.SkipBits(1)
+        bs.SkipBits(4) // DTS prefix.
         pkg.Dts = bs.GetBits(3)
         bs.SkipBits(1)
-        pkg.Dts = pkg.Pts<<15 | bs.GetBits(15)
+        pkg.Dts = pkg.Dts<<15 | bs.GetBits(15)
         bs.SkipBits(1)
-        pkg.Dts = pkg.Pts<<15 | bs.GetBits(15)
+        pkg.Dts = pkg.Dts<<15 | bs.GetBits(15)
         bs.SkipBits(1)
     } else if bs.NextBits(8) == 0x0F {
         bs.SkipBits(8)

@@ -59,14 +59,16 @@ func (stream *tsstream) updateTimestamps() {
 }
 
 type tsprogram struct {
-    pn      uint16
-    streams map[uint16]*tsstream
+    pn       uint16
+    streams  map[uint16]*tsstream
+    sections psiSections
 }
 
 type TSDemuxer struct {
-    programs   map[uint16]*tsprogram
-    OnFrame    func(cid TS_STREAM_TYPE, frame []byte, pts uint64, dts uint64)
-    OnTSPacket func(pkg *TSPacket)
+    programs    map[uint16]*tsprogram
+    patSections psiSections
+    OnFrame     func(cid TS_STREAM_TYPE, frame []byte, pts uint64, dts uint64)
+    OnTSPacket  func(pkg *TSPacket)
 }
 
 func NewTSDemuxer() *TSDemuxer {
@@ -105,51 +107,16 @@ func (demuxer *TSDemuxer) Input(r io.Reader) error {
             return err
         }
         if pkg.PID == uint16(TS_PID_PAT) {
-            if pkg.Payload_unit_start_indicator == 1 {
-                bs.SkipBits(8)
-            }
-            pkg.Payload, err = ReadSection(TS_TID_PAS, bs)
-            if err != nil {
+            if err := demuxer.readPAT(&pkg, bs.RemainData()); err != nil {
                 return err
-            }
-            pat := pkg.Payload.(*Pat)
-            for _, pmt := range pat.Pmts {
-                if pmt.Program_number != 0x0000 {
-                    if _, found := demuxer.programs[pmt.PID]; !found {
-                        demuxer.programs[pmt.PID] = &tsprogram{pn: 0, streams: make(map[uint16]*tsstream)}
-                    }
-                }
             }
         } else if pkg.PID == TS_PID_Nil {
             continue
         } else {
             for p, s := range demuxer.programs {
                 if p == pkg.PID { // pmt table
-                    if pkg.Payload_unit_start_indicator == 1 {
-                        bs.SkipBits(8) //pointer filed
-                    }
-                    pkg.Payload, err = ReadSection(TS_TID_PMS, bs)
-                    if err != nil {
+                    if err := demuxer.readPMT(s, &pkg, bs.RemainData()); err != nil {
                         return err
-                    }
-                    pmt := pkg.Payload.(*Pmt)
-                    if pmt.Current_next_indicator == 0 {
-                        continue
-                    }
-                    s.pn = pmt.Program_number
-                    for _, ps := range pmt.Streams {
-                        cid := TS_STREAM_TYPE(ps.StreamType)
-                        if old := s.streams[ps.Elementary_PID]; old != nil {
-                            if old.cid == cid {
-                                continue
-                            }
-                            demuxer.flushStream(old)
-                        }
-                        s.streams[ps.Elementary_PID] = &tsstream{
-                            cid:     cid,
-                            pes_sid: findPESIDByStreamType(cid),
-                            pes_pkg: NewPesPacket(),
-                        }
                     }
                 } else {
                     for sid, stream := range s.streams {
@@ -186,6 +153,58 @@ func (demuxer *TSDemuxer) Input(r io.Reader) error {
     }
     demuxer.flush()
     return nil
+}
+
+func (demuxer *TSDemuxer) readPAT(packet *TSPacket, data []byte) error {
+    return demuxer.patSections.input(packet, data, func(section []byte) error {
+        pat := NewPat()
+        if err := pat.Decode(codec.NewBitStream(section)); err != nil {
+            return err
+        }
+        if packet.Payload == nil {
+            packet.Payload = pat
+        }
+        if pat.Current_next_indicator == 0 {
+            return nil
+        }
+        for _, pmt := range pat.Pmts {
+            if pmt.Program_number != 0 && demuxer.programs[pmt.PID] == nil {
+                demuxer.programs[pmt.PID] = &tsprogram{streams: make(map[uint16]*tsstream)}
+            }
+        }
+        return nil
+    })
+}
+
+func (demuxer *TSDemuxer) readPMT(program *tsprogram, packet *TSPacket, data []byte) error {
+    return program.sections.input(packet, data, func(section []byte) error {
+        pmt := NewPmt()
+        if err := pmt.Decode(codec.NewBitStream(section)); err != nil {
+            return err
+        }
+        if packet.Payload == nil {
+            packet.Payload = pmt
+        }
+        if pmt.Current_next_indicator == 0 {
+            return nil
+        }
+        program.pn = pmt.Program_number
+        for _, entry := range pmt.Streams {
+            cid := TS_STREAM_TYPE(entry.StreamType)
+            if old := program.streams[entry.Elementary_PID]; old != nil {
+                if old.cid == cid {
+                    continue
+                }
+                demuxer.flushStream(old)
+            }
+            program.streams[entry.Elementary_PID] = &tsstream{
+                cid:     cid,
+                pes_sid: findPESIDByStreamType(cid),
+                pes_pkg: NewPesPacket(),
+            }
+        }
+        return nil
+    })
 }
 
 func (demuxer *TSDemuxer) probe(r io.Reader) ([]byte, error) {

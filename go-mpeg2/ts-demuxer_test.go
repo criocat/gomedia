@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"reflect"
 	"testing"
+	"testing/iotest"
 )
 
 const clockTestAAC = "\xff\xf1\x4c\x80\x01\xbf\xfc\x21\x10\x04\x60\x8c\x1c"
@@ -107,5 +108,47 @@ func TestTSDemuxerUnwrapsVideoPTSRelativeToDTS(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("video PTS/DTS = %v, want %v", got, want)
+	}
+}
+
+func TestTSDemuxerReadsPMTSpanningPackets(t *testing.T) {
+	muxer := NewTSMuxer()
+	const tracks = 36
+	for i := 0; i < tracks; i++ {
+		muxer.AddStream(TS_STREAM_AAC)
+	}
+	var input bytes.Buffer
+	muxer.OnPacket = func(data []byte) { input.Write(data) }
+	for _, track := range muxer.pat.pmts[0].streams {
+		if err := muxer.Write(track.pid, []byte(clockTestAAC), 100, 100); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	demuxer := NewTSDemuxer()
+	pmtPackets, sections, frames := 0, 0, 0
+	demuxer.OnTSPacket = func(packet *TSPacket) {
+		if packet.PID != 0x200 {
+			return
+		}
+		pmtPackets++
+		if pmt, ok := packet.Payload.(*Pmt); ok {
+			sections++
+			if len(pmt.Streams) != tracks || pmtPackets != 2 {
+				t.Errorf("assembled PMT after %d packets with %d streams", pmtPackets, len(pmt.Streams))
+			}
+		}
+	}
+	demuxer.OnFrame = func(cid TS_STREAM_TYPE, payload []byte, pts, dts uint64) {
+		frames++
+		if cid != TS_STREAM_AAC || string(payload) != clockTestAAC || pts != 100 || dts != 100 {
+			t.Errorf("frame = codec %d, data %x, PTS %d, DTS %d", cid, payload, pts, dts)
+		}
+	}
+	if err := demuxer.Input(iotest.OneByteReader(&input)); err != nil {
+		t.Fatal(err)
+	}
+	if pmtPackets != 2 || sections != 1 || frames != tracks {
+		t.Errorf("PMT packets = %d, sections = %d, frames = %d, want 2, 1, %d", pmtPackets, sections, frames, tracks)
 	}
 }

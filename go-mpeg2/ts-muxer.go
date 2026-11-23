@@ -111,7 +111,7 @@ func (mux *TSMuxer) Write(pid uint16, data []byte, pts uint64, dts uint64) error
     if whichpmt == nil || whichstream == nil {
         return errors.New("not Found pid stream")
     }
-    if 13+5*len(whichpmt.streams) > 1021 {
+    if 13+5*len(whichpmt.streams) > maxPSISectionLength {
         return errors.New("too many streams for one MPEG-TS program map section")
     }
     oldPCRPID := whichpmt.pcr_pid
