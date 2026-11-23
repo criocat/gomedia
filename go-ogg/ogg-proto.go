@@ -148,10 +148,11 @@ func PrintPage(page *oggPage) {
 }
 
 type oggStream struct {
-    currentPage *oggPage
-    streamId    uint32
-    cid         codec.CodecID
-    parser      oggParser
-    lost        int
-    cache       []byte
+    currentPage   *oggPage
+    streamId      uint32
+    cid           codec.CodecID
+    parser        oggParser
+    lost          int
+    discontinuity bool
+    cache         []byte
 }

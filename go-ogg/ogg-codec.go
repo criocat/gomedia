@@ -118,8 +118,8 @@ func (opus *opusDemuxer) packet(stream *oggStream, packet []byte) ([]byte, uint6
     page := stream.currentPage
     if stream.lost == 0 && (!opus.hasAudio || opus.pageSeq != page.pageSeq) {
         // After earlier audio, the EOS granule trims the end of the page.
-        // Timestamp its packets forward from the previous page instead.
-        if !page.eos || !opus.hasAudio {
+        // Carry forward the previous timestamp only across consecutive audio.
+        if !page.eos || !opus.hasAudio || stream.discontinuity {
             var duration uint64
             for _, pkt := range page.packets {
                 duration += codec.OpusPacketDuration(pkt)

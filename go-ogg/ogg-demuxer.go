@@ -127,13 +127,13 @@ func (demuxer *Demuxer) Input(buf []byte) (err error) {
                     if demuxer.OnPacket != nil {
                         demuxer.OnPacket(stream.streamId, stream.currentPage.granulePos, stream.cache, 1)
                     }
-                    err = demuxer.readPacket(stream, stream.cache)
-                    if err != nil {
-                        return err
+                    if len(stream.cache) > 0 {
+                        if err := demuxer.readPacket(stream, stream.cache); err != nil {
+                            return err
+                        }
                     }
                     stream.cache = stream.cache[:0]
-                } else {
-                    stream.lost = 0
+                    stream.discontinuity = true
                 }
             } else {
                 stream = &oggStream{
@@ -145,6 +145,7 @@ func (demuxer *Demuxer) Input(buf []byte) (err error) {
                 demuxer.streams[page.streamId] = stream
             }
             stream.currentPage = page
+            stream.lost = 0
 
             idx := 0
             if page.isContinuePacket {
@@ -160,7 +161,7 @@ func (demuxer *Demuxer) Input(buf []byte) (err error) {
                         break
                     }
                 }
-                if len(stream.cache) > 0 && stream.lost == 0 {
+                if len(stream.cache) > 0 {
                     stream.cache = append(stream.cache, payload[:continuationLen]...)
                     if complete {
                         if demuxer.OnPacket != nil {
@@ -194,6 +195,9 @@ func (demuxer *Demuxer) Input(buf []byte) (err error) {
                 if err := demuxer.readPacket(stream, pkt); err != nil {
                     return err
                 }
+            }
+            if len(page.packets) > 0 {
+                stream.discontinuity = false
             }
 
             if packetLen > 0 {
