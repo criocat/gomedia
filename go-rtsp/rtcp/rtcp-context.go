@@ -153,7 +153,7 @@ func (ctx *RtcpContext) updateSeq(seq uint16) int {
         }
         ctx.maxSeq = seq
     } else if delta <= RTP_SEQ_MOD-MAX_MISORDER {
-        if seq == uint16(ctx.badSeq) {
+        if uint32(seq) == ctx.badSeq {
             ctx.initSeq(seq)
         } else {
             ctx.badSeq = uint32((seq + 1) & (RTP_SEQ_MOD - 1))
@@ -168,18 +168,19 @@ func (ctx *RtcpContext) updateSeq(seq uint16) int {
 
 func (ctx *RtcpContext) getReportBlock() ReportBlock {
     rb := ReportBlock{}
-    extendMax := ctx.cycles + uint32(ctx.maxSeq)
-    expected := extendMax - ctx.baseSeq + 1
-    lost := expected - ctx.received
-    expectedInterval := expected - ctx.expectPrior
-    ctx.expectPrior = expected
-    receivedInterval := ctx.received - ctx.receivedPrior
-    ctx.receivedPrior = ctx.received
-    var fraction uint8
-    // Duplicates can make the received count exceed the expected count.
-    if receivedInterval < expectedInterval {
-        lostInterval := expectedInterval - receivedInterval
-        fraction = uint8((uint64(lostInterval) << 8) / uint64(expectedInterval))
+    if ctx.probation == 0 {
+        rb.ExtendHighestSeq = ctx.cycles + uint32(ctx.maxSeq)
+        expected := rb.ExtendHighestSeq - ctx.baseSeq + 1
+        rb.Lost = expected - ctx.received
+        expectedInterval := expected - ctx.expectPrior
+        ctx.expectPrior = expected
+        receivedInterval := ctx.received - ctx.receivedPrior
+        ctx.receivedPrior = ctx.received
+        // Duplicates can make the received count exceed the expected count.
+        if receivedInterval < expectedInterval {
+            lostInterval := expectedInterval - receivedInterval
+            rb.Fraction = uint8((uint64(lostInterval) << 8) / uint64(expectedInterval))
+        }
     }
 
     rb.SSRC = ctx.srSSRC
@@ -192,9 +193,6 @@ func (ctx *RtcpContext) getReportBlock() ReportBlock {
         rb.Dlsr = uint32(float32(delay) / 1000000 * 65536)
     }
 
-    rb.Lost = lost
-    rb.Fraction = fraction
-    rb.ExtendHighestSeq = extendMax
     rb.Jitter = uint32(ctx.jitter)
     return rb
 }
