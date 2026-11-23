@@ -22,13 +22,17 @@ func newPacket_t(size uint32) *pakcet_t {
 }
 
 type tsstream struct {
-    cid     TS_STREAM_TYPE
-    pes_sid PES_STREMA_ID
-    pes_pkg *PesPacket
-    pkg     *pakcet_t
-    pts     uint64
-    dts     uint64
-    hasDTS  bool
+    cid           TS_STREAM_TYPE
+    pes_sid       PES_STREMA_ID
+    pes_pkg       *PesPacket
+    pkg           *pakcet_t
+    pts           uint64
+    dts           uint64
+    hasDTS        bool
+    continuity    uint8
+    hasContinuity bool
+    inPES         bool
+    pesBytesLeft  int // -1 when the PES packet length is unspecified.
 }
 
 const tsTimestampPeriod = uint64(1) << 33
@@ -118,31 +122,9 @@ func (demuxer *TSDemuxer) Input(r io.Reader) error {
                     if err := demuxer.readPMT(s, &pkg, bs.RemainData()); err != nil {
                         return err
                     }
-                } else {
-                    for sid, stream := range s.streams {
-                        if sid != pkg.PID {
-                            continue
-                        }
-                        if pkg.Field != nil && pkg.Field.Discontinuity_indicator != 0 {
-                            stream.hasDTS = false
-                        }
-                        if pkg.Payload_unit_start_indicator == 1 {
-                            err := stream.pes_pkg.Decode(bs)
-                            // ignore error if it was a short payload read, next ts packet should append missing data
-                            if err != nil && !(errors.Is(err, errNeedMore) && stream.pes_pkg.Pes_payload != nil) {
-                                return err
-                            }
-                            stream.updateTimestamps()
-                            pkg.Payload = stream.pes_pkg
-                        } else {
-                            stream.pes_pkg.Pes_payload = bs.RemainData()
-                            pkg.Payload = bs.RemainData()
-                        }
-                        if stream.pes_sid == PES_STREAM_AUDIO {
-                            demuxer.doAudioPesPacket(stream, pkg.Payload_unit_start_indicator)
-                        } else if stream.pes_sid == PES_STREAM_VIDEO {
-                            demuxer.doVideoPesPacket(stream, pkg.Payload_unit_start_indicator)
-                        }
+                } else if stream := s.streams[pkg.PID]; stream != nil {
+                    if err := demuxer.readPES(stream, &pkg, bs.RemainData()); err != nil {
+                        return err
                     }
                 }
             }
@@ -174,6 +156,77 @@ func (demuxer *TSDemuxer) readPAT(packet *TSPacket, data []byte) error {
         }
         return nil
     })
+}
+
+func (stream *tsstream) dropIncompletePES() {
+    if stream.pesBytesLeft != 0 {
+        stream.pkg = nil
+    }
+    stream.inPES = false
+    stream.pesBytesLeft = 0
+}
+
+func (demuxer *TSDemuxer) readPES(stream *tsstream, packet *TSPacket, payload []byte) error {
+    if packet.Field != nil && packet.Field.Discontinuity_indicator != 0 {
+        stream.hasDTS = false
+        stream.hasContinuity = false
+        stream.dropIncompletePES()
+    }
+    if packet.Adaptation_field_control&1 == 0 {
+        return nil
+    }
+    if stream.hasContinuity {
+        if packet.Continuity_counter == stream.continuity {
+            return nil
+        }
+        if packet.Continuity_counter != (stream.continuity+1)&0x0f {
+            stream.dropIncompletePES()
+        }
+    }
+    stream.continuity = packet.Continuity_counter
+    stream.hasContinuity = true
+
+    start := packet.Payload_unit_start_indicator
+    pes := stream.pes_pkg
+    if start == 1 {
+        if stream.pesBytesLeft > 0 {
+            stream.dropIncompletePES()
+        }
+        pes.Pes_payload = nil
+        err := pes.Decode(codec.NewBitStream(payload))
+        // The PES header is available even when the payload spans several packets.
+        if err != nil && !(errors.Is(err, errNeedMore) && pes.Pes_payload != nil) {
+            return err
+        }
+        stream.inPES = true
+        stream.pesBytesLeft = -1
+        if pes.PES_packet_length != 0 {
+            stream.pesBytesLeft = int(pes.PES_packet_length) - 3 - int(pes.PES_header_data_length) - len(pes.Pes_payload)
+            if stream.pesBytesLeft < 0 {
+                return errors.New("invalid MPEG-TS PES packet length")
+            }
+        }
+        stream.updateTimestamps()
+        packet.Payload = pes
+    } else {
+        if !stream.inPES || stream.pesBytesLeft == 0 {
+            return nil
+        }
+        if stream.pesBytesLeft > 0 {
+            if len(payload) > stream.pesBytesLeft {
+                payload = payload[:stream.pesBytesLeft]
+            }
+            stream.pesBytesLeft -= len(payload)
+        }
+        pes.Pes_payload = payload
+        packet.Payload = payload
+    }
+    if stream.pes_sid == PES_STREAM_AUDIO {
+        demuxer.doAudioPesPacket(stream, start)
+    } else if stream.pes_sid == PES_STREAM_VIDEO {
+        demuxer.doVideoPesPacket(stream, start)
+    }
+    return nil
 }
 
 func (demuxer *TSDemuxer) readPMT(program *tsprogram, packet *TSPacket, data []byte) error {
@@ -253,7 +306,7 @@ func (demuxer *TSDemuxer) flush() {
 }
 
 func (demuxer *TSDemuxer) flushStream(stream *tsstream) {
-    if stream.pkg == nil || len(stream.pkg.payload) == 0 || demuxer.OnFrame == nil {
+    if stream.pkg == nil || len(stream.pkg.payload) == 0 || stream.pesBytesLeft > 0 || demuxer.OnFrame == nil {
         return
     }
     payload := stream.pkg.payload

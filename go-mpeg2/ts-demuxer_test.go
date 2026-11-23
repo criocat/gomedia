@@ -152,3 +152,61 @@ func TestTSDemuxerReadsPMTSpanningPackets(t *testing.T) {
 		t.Errorf("PMT packets = %d, sections = %d, frames = %d, want 2, 1, %d", pmtPackets, sections, frames, tracks)
 	}
 }
+
+func TestTSDemuxerHandlesDuplicateAndMissingPESFragments(t *testing.T) {
+	muxer := NewTSMuxer()
+	pid := muxer.AddStream(TS_STREAM_AAC)
+	var packets [][]byte
+	muxer.OnPacket = func(data []byte) {
+		packets = append(packets, append([]byte(nil), data...))
+	}
+	frames := [][]byte{
+		bytes.Repeat([]byte(clockTestAAC), 20),
+		bytes.Repeat([]byte(clockTestAAC), 21),
+		bytes.Repeat([]byte(clockTestAAC), 22),
+	}
+	for i, frame := range frames {
+		stamp := 100 * uint64(i)
+		if err := muxer.Write(pid, frame, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var continuations []int
+	for i, packet := range packets {
+		if uint16(packet[1]&31)<<8|uint16(packet[2]) == pid && packet[1]&0x40 == 0 {
+			continuations = append(continuations, i)
+		}
+	}
+	if len(continuations) != len(frames) {
+		t.Fatalf("fixture requires one continuation packet per frame")
+	}
+	for _, test := range []struct {
+		name string
+		wire [][]byte
+		want [][]byte
+	}{
+		{"duplicate", append(append([][]byte(nil), packets[:continuations[0]+1]...), packets[continuations[0]:]...), frames},
+		{"loss", append(append([][]byte(nil), packets[:continuations[1]]...), packets[continuations[1]+1:]...), [][]byte{frames[0], frames[2]}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			demuxer := NewTSDemuxer()
+			var got [][]byte
+			demuxer.OnFrame = func(_ TS_STREAM_TYPE, frame []byte, _, _ uint64) {
+				got = append(got, append([]byte(nil), frame...))
+			}
+			if err := demuxer.Input(bytes.NewReader(bytes.Join(test.wire, nil))); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				var sizes, expected []int
+				for _, frame := range got {
+					sizes = append(sizes, len(frame))
+				}
+				for _, frame := range test.want {
+					expected = append(expected, len(frame))
+				}
+				t.Errorf("AAC payload sizes = %v, want %v with original bytes", sizes, expected)
+			}
+		})
+	}
+}
