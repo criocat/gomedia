@@ -480,11 +480,12 @@ func (client *RtspClient) handleDescribe(res *RtspResponse) (err error) {
     }
     interleaved := 0
     for i := client.setupStep; i < len(client.sdpContext.Medias); i++ {
-        track, found := client.tracks[client.sdpContext.Medias[client.setupStep].MediaType]
+        media := client.sdpContext.Medias[i]
+        track, found := client.tracks[media.MediaType]
         if !found || !track.isOpen {
             continue
         }
-        req := makeSetup(client.sdpContext.Medias[client.setupStep].ControlUrl, client.cseq)
+        req := makeSetup(media.ControlUrl, client.cseq)
         if track.transport == nil {
             track.transport = NewRtspTransport(WithTcpInterleaved([2]int{interleaved, interleaved + 1}))
         }
@@ -523,30 +524,28 @@ func (client *RtspClient) handleSetup(res *RtspResponse) error {
         }
         return err
     }
-    client.state = STATE_Ready
-    if client.handle != nil {
-
-        if res.StatusCode == 200 && !res.Fileds.Has(Session) {
-            return errors.New("session filed must in setup response")
-        }
-
-        if client.sessionId == "" {
-            sessionId := ""
-            timeout := 60
-            if res.Fileds.Has(Session) {
-                sessionId = res.Fileds[Session]
-                param := strings.Split(sessionId, ";")
-                sessionId = param[0]
-                if len(param) > 1 {
-                    to := strings.TrimSpace(param[1])
-                    kv := strings.Split(to, "=")
-                    timeout, _ = strconv.Atoi(kv[1])
+    session := strings.Split(res.Fileds[Session], ";")
+    sessionID := strings.TrimSpace(session[0])
+    if sessionID == "" {
+        return errors.New("missing Session in RTSP SETUP response")
+    }
+    if err := lastTrack.transport.DecodeString(res.Fileds[Transport]); err != nil {
+        return err
+    }
+    if client.sessionId == "" {
+        client.sessionId = sessionID
+        client.timeout = 60
+        for _, parameter := range session[1:] {
+            parts := strings.SplitN(parameter, "=", 2)
+            if len(parts) == 2 && strings.EqualFold(strings.TrimSpace(parts[0]), "timeout") {
+                if timeout, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil {
+                    client.timeout = timeout
                 }
             }
-            client.sessionId = sessionId
-            client.timeout = timeout
         }
-        lastTrack.transport.DecodeString(res.Fileds[Transport])
+    }
+    client.state = STATE_Ready
+    if client.handle != nil {
         if err := client.handle.HandleSetup(client, *res, lastTrack, client.tracks, client.sessionId, client.timeout); err != nil {
             return err
         }
@@ -569,11 +568,12 @@ func (client *RtspClient) handleSetup(res *RtspResponse) error {
     }
 
     for i := client.setupStep; i < len(client.sdpContext.Medias); i++ {
-        track, found := client.tracks[client.sdpContext.Medias[client.setupStep].MediaType]
+        media := client.sdpContext.Medias[i]
+        track, found := client.tracks[media.MediaType]
         if !found || !track.isOpen {
             continue
         }
-        req := makeSetup(client.sdpContext.Medias[client.setupStep].ControlUrl, client.cseq)
+        req := makeSetup(media.ControlUrl, client.cseq)
         if track.transport == nil {
             track.transport = NewRtspTransport(WithTcpInterleaved([2]int{lastTrack.transport.Interleaved[0] + 2, lastTrack.transport.Interleaved[0] + 3}))
         }
@@ -583,8 +583,8 @@ func (client *RtspClient) handleSetup(res *RtspResponse) error {
             track.transport.mode = PLAY
         }
         if track.transport.Proto == TCP && lastTrack.transport.Interleaved[0] == lastTrack.transport.Interleaved[1] {
-            track.transport.Interleaved[0] = client.setupStep * 2
-            track.transport.Interleaved[1] = client.setupStep*2 + 1
+            track.transport.Interleaved[0] = i * 2
+            track.transport.Interleaved[1] = i*2 + 1
         }
         client.setupStep = i + 1
         req.Fileds[Transport] = track.transport.EncodeString()

@@ -219,3 +219,38 @@ func TestRTSPPlaysOneTrackWithoutAggregateControl(t *testing.T) {
 		t.Errorf("RTSP client state = %d, want Playing", client.state)
 	}
 }
+
+const controlTestSetupOK = "RTSP/1.0 200 OK\r\nCSeq: 3\r\nSession: 12345678;timeout=45\r\n" +
+	"Transport: RTP/AVP/TCP;unicast;interleaved=4-5\r\n\r\n"
+
+func TestRTSPAppliesSetupResponseWithoutHandler(t *testing.T) {
+	client, sent := startControlTestClient(t, nil, controlTestSDP+"a=control:audio\r\n")
+	feedControlMessage(t, client, controlTestSetupOK)
+	if len(*sent) != 4 || !strings.Contains((*sent)[3], "\r\nSession: 12345678\r\n") || client.timeout != 45 {
+		t.Fatalf("PLAY requests = %q, timeout = %d", *sent, client.timeout)
+	}
+	track, found := client.GetTrack("audio")
+	if !found || track.GetTransport().Interleaved != [2]int{4, 5} {
+		t.Fatalf("client did not negotiate the 4-5 interleaved channels")
+	}
+}
+
+type controlTestVideoOnly struct{ controlTestClient }
+
+func (*controlTestVideoOnly) HandleDescribe(_ *RtspClient, _ RtspResponse, _ *sdp.Sdp, tracks map[string]*RtspTrack) error {
+	delete(tracks, "audio")
+	return nil
+}
+
+func TestRTSPSkipsTracksRemovedByDescribeHandler(t *testing.T) {
+	description := controlTestSDP + "a=control:audio\r\nm=video 0 RTP/AVP 96\r\n" +
+		"a=rtpmap:96 H264/90000\r\na=control:video\r\n"
+	client, sent := startControlTestClient(t, &controlTestVideoOnly{}, description)
+	if !strings.HasPrefix((*sent)[2], "SETUP rtsp://localhost/source/video RTSP/1.0\r\n") {
+		t.Fatalf("SETUP did not select the retained video track: %q", (*sent)[2])
+	}
+	feedControlMessage(t, client, controlTestSetupOK)
+	if len(*sent) != 4 || !strings.HasPrefix((*sent)[3], "PLAY ") {
+		t.Errorf("requests after successful SETUP = %q, want PLAY next", *sent)
+	}
+}
