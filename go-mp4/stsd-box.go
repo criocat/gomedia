@@ -504,7 +504,10 @@ func decodeEsdsBox(demuxer *MovDemuxer, size uint32) (err error) {
         return
     }
     track := demuxer.tracks[len(demuxer.tracks)-1]
-    vosdata := decodeESDescriptor(buf, track)
+    vosdata, err := decodeESDescriptor(buf, track)
+    if err != nil {
+        return err
+    }
     if track.extra != nil {
         track.extra.load(vosdata)
     }

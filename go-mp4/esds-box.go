@@ -2,6 +2,8 @@ package mp4
 
 import (
     "encoding/binary"
+    "errors"
+    "io"
 
     "github.com/yapingcat/gomedia/go-codec"
 )
@@ -109,7 +111,7 @@ func makeSLDescriptor() []byte {
     return sldes
 }
 
-func decodeESDescriptor(esd []byte, track *mp4track) (vosData []byte) {
+func decodeESDescriptor(esd []byte, track *mp4track) (vosData []byte, err error) {
 	var bs *codec.BitStream
 	for len(esd) > 0 {
 		based := BaseDescriptor{}
@@ -118,11 +120,21 @@ func decodeESDescriptor(esd []byte, track *mp4track) (vosData []byte) {
 		case 0x03:
 			_ = bs.Uint8(16) // esId
 			streamDependenceFlag := bs.Uint8(1)
-			_ = bs.Uint8(1) // urlFlag
+			urlFlag := bs.Uint8(1)
 			oCRstreamFlag := bs.Uint8(1)
 			_ = bs.Uint8(5) //streamPriority
 			if streamDependenceFlag == 1 {
 				_ = bs.Uint8(16) // dependsOnEsId
+			}
+			if urlFlag == 1 {
+				if bs.RemainBytes() == 0 {
+					return nil, io.ErrUnexpectedEOF
+				}
+				length := int(bs.Uint8(8))
+				if length > bs.RemainBytes() {
+					return nil, io.ErrUnexpectedEOF
+				}
+				bs.SkipBits(length * 8)
 			}
 			if oCRstreamFlag == 1 {
 				_ = bs.Uint8(16) // oCREsId
@@ -143,10 +155,10 @@ func decodeESDescriptor(esd []byte, track *mp4track) (vosData []byte) {
 			esd = bs.RemainData()
 		}
 	}
-	if track.cid == MP4_CODEC_AAC && len(vosData) == 0 {
-		panic("no vosdata")
-	}
 	if track.cid == MP4_CODEC_AAC {
+		if len(vosData) == 0 {
+			return nil, errors.New("MP4 esds: missing AAC configuration")
+		}
 		track.extra = new(aacExtraData)
 	}
 	return
