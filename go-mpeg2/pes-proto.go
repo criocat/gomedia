@@ -202,6 +202,7 @@ func (pkg *PesPacket) Decode(bs *codec.BitStream) error {
     }
 
     if pkg.Additional_copy_info_flag == 1 {
+        bs.SkipBits(1) // marker_bit
         pkg.Additional_copy_info = bs.Uint8(7)
     }
 
@@ -356,6 +357,22 @@ func (pkg *PesPacket) Encode(bsw *codec.BitStreamWriter) {
         bsw.PutUint8(0x01, 1)
         bsw.PutUint16(pkg.ESCR_extension, 9)
         bsw.PutUint8(0x01, 1)
+    }
+    if pkg.ES_rate_flag == 1 {
+        bsw.PutUint8(1, 1)
+        bsw.PutUint32(pkg.ES_rate, 22)
+        bsw.PutUint8(1, 1)
+    }
+    if pkg.DSM_trick_mode_flag == 1 {
+        bsw.PutUint8(pkg.Trick_mode_control, 3)
+        bsw.PutUint8(pkg.Trick_value, 5)
+    }
+    if pkg.Additional_copy_info_flag == 1 {
+        bsw.PutUint8(1, 1)
+        bsw.PutUint8(pkg.Additional_copy_info, 7)
+    }
+    if pkg.PES_CRC_flag == 1 {
+        bsw.PutUint16(pkg.Previous_PES_packet_CRC, 16)
     }
     bsw.PutBytes(pkg.Pes_payload)
 }
