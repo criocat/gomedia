@@ -178,6 +178,7 @@ func (bs *BitStream) UnRead(n int) {
         bs.bitsOffset -= n
     } else {
         least := n - bs.bitsOffset
+        bs.bitsOffset = 0
         for least >= 8 {
             bs.bytesOffset--
             least -= 8
@@ -251,15 +252,13 @@ func (bsw *BitStreamWriter) DistanceFromMarkDot() int {
 }
 
 func (bsw *BitStreamWriter) PutByte(v byte) {
-    bsw.expandSpace(8)
-    if bsw.bitsoffset == 0 {
-        bsw.bits[bsw.byteoffset] = v
-        bsw.byteoffset++
-    } else {
-        bsw.bits[bsw.byteoffset] |= v >> byte(bsw.bitsoffset)
-        bsw.byteoffset++
-        bsw.bits[bsw.byteoffset] = v & BitMask[bsw.bitsoffset-1]
+    if bsw.bitsoffset != 0 {
+        bsw.PutUint8(v, 8)
+        return
     }
+    bsw.expandSpace(8)
+    bsw.bits[bsw.byteoffset] = v
+    bsw.byteoffset++
 }
 
 func (bsw *BitStreamWriter) PutBytes(v []byte) {

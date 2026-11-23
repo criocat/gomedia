@@ -1,6 +1,7 @@
 package codec
 
 import (
+    "bytes"
     "testing"
 )
 
@@ -38,6 +39,18 @@ func Test_UnRead(t *testing.T) {
     t.Log(bs.GetBits(3))
 }
 
+func TestBitStreamRewindToEarlierByteBoundary(t *testing.T) {
+    bs := NewBitStream([]byte{0x34, 0xd5, 0x62, 0x91})
+    bs.SkipBits(19)
+    bs.UnRead(11)
+    if offset, remaining := bs.ByteOffset(), bs.RemainBits(); offset != 1 || remaining != 24 {
+        t.Fatalf("byte offset = %d, remaining bits = %d, want 1 and 24", offset, remaining)
+    }
+    if got := bs.Uint8(8); got != 0xd5 {
+        t.Errorf("byte after rewind = %#02x, want 0xd5", got)
+    }
+}
+
 func Test_SkipBits(t *testing.T) {
     bs := NewBitStream(testbit)
     bs.SkipBits(4)
@@ -62,6 +75,16 @@ func Test_BitStreamWriter(t *testing.T) {
     bsw.PutUint16(0x4c, 7)
     bsw.PutUint16(0xED, 6)
     t.Logf("%x", bsw.Bits())
+}
+
+func TestBitStreamWriterWritesByteAfterPartialByte(t *testing.T) {
+    bsw := NewBitStreamWriter(1)
+    bsw.PutUint8(0b101, 3)
+    bsw.PutByte(0xdd)
+    bsw.PutUint8(0b00101, 5)
+    if got, want := bsw.Bits(), []byte{0xbb, 0xa5}; !bytes.Equal(got, want) {
+        t.Errorf("packed bytes = %x, want %x", got, want)
+    }
 }
 
 func TestBitStream_RemainBits(t *testing.T) {
