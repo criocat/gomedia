@@ -76,3 +76,38 @@ func TestADTSBufferFullnessEncoding(t *testing.T) {
 		}
 	}
 }
+
+func TestADTSDecodesMPEGVersionBit(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		byteOne byte
+		id      uint8
+	}{
+		{"MPEG-4", 0xf1, 0},
+		{"MPEG-2", 0xf9, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var header ADTS_Frame_Header
+			header.Decode([]byte{0xff, tc.byteOne, 0x50, 0x80, 0x01, 0xbf, 0xfc})
+			if got := header.Fix_Header.ID; got != tc.id {
+				t.Errorf("MPEG ID = %d, want %d", got, tc.id)
+			}
+		})
+	}
+}
+
+func TestASCToADTSMarksUnknownBufferFullness(t *testing.T) {
+	asc := &AudioSpecificConfiguration{
+		Audio_object_type:     2,
+		Sample_freq_index:     uint8(AAC_SAMPLE_44100),
+		Channel_configuration: 2,
+	}
+	header, err := ConvertASCToADTS(asc.Encode(), 13)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := header.Encode()
+	if fullness := uint16(wire[5]&0x1f)<<6 | uint16(wire[6]>>2); fullness != 0x7ff {
+		t.Errorf("buffer fullness = %#03x, want 0x7ff", fullness)
+	}
+}

@@ -133,7 +133,7 @@ func NewAdtsFrameHeader() *ADTS_Frame_Header {
 
 func (frame *ADTS_Frame_Header) Decode(aac []byte) {
     _ = aac[6]
-    frame.Fix_Header.ID = aac[1] >> 3
+    frame.Fix_Header.ID = aac[1] >> 3 & 0x01
     frame.Fix_Header.Layer = aac[1] >> 1 & 0x03
     frame.Fix_Header.Protection_absent = aac[1] & 0x01
     frame.Fix_Header.Profile = aac[2] >> 6 & 0x03
@@ -252,7 +252,8 @@ func ConvertASCToADTS(asc []byte, aacbytes int) (*ADTS_Frame_Header, error) {
     aac_adts.Fix_Header.Channel_configuration = aac_asc.Channel_configuration
     aac_adts.Fix_Header.Sampling_frequency_index = aac_asc.Sample_freq_index
     aac_adts.Fix_Header.Protection_absent = 1
-    aac_adts.Variable_Header.Adts_buffer_fullness = 0x3F
+    // Use the variable-rate marker for a header synthesized from ASC.
+    aac_adts.Variable_Header.Adts_buffer_fullness = 0x7FF
     aac_adts.Variable_Header.Frame_length = uint16(aacbytes)
     return aac_adts, nil
 }
