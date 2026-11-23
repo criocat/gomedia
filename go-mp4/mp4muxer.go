@@ -34,7 +34,7 @@ type Movmuxer struct {
     writer         io.WriteSeeker
     nextTrackId    uint32
     nextFragmentId uint32
-    mdatOffset     uint32
+    mdatOffset     int64
     tracks         map[uint32]*mp4track
     movFlag        MP4_FLAG
     onNewFragment  OnFragment
@@ -86,7 +86,7 @@ func CreateMp4Muxer(w io.WriteSeeker, options ...MuxerOption) (*Movmuxer, error)
         if err != nil {
             return nil, err
         }
-        muxer.mdatOffset = uint32(currentOffset)
+        muxer.mdatOffset = currentOffset
         mdat := BasicBox{Type: [4]byte{'m', 'd', 'a', 't'}}
         mdat.Size = 8
         mdatlen, mdatBox := mdat.Encode()
@@ -261,12 +261,12 @@ func (muxer *Movmuxer) reWriteMdatSize() (err error) {
     if currentOffset, err = muxer.writer.Seek(0, io.SeekCurrent); err != nil {
         return err
     }
-    datalen := currentOffset - int64(muxer.mdatOffset)
+    datalen := currentOffset - muxer.mdatOffset
     if datalen > 0xFFFFFFFF {
         mdat := BasicBox{Type: [4]byte{'m', 'd', 'a', 't'}}
         mdat.Size = uint64(datalen + 8)
         mdatBoxLen, mdatBox := mdat.Encode()
-        if _, err = muxer.writer.Seek(int64(muxer.mdatOffset)-8, io.SeekStart); err != nil {
+        if _, err = muxer.writer.Seek(muxer.mdatOffset-8, io.SeekStart); err != nil {
             return
         }
         if _, err = muxer.writer.Write(mdatBox[0:mdatBoxLen]); err != nil {
@@ -276,7 +276,7 @@ func (muxer *Movmuxer) reWriteMdatSize() (err error) {
             return
         }
     } else {
-        if _, err = muxer.writer.Seek(int64(muxer.mdatOffset), io.SeekStart); err != nil {
+        if _, err = muxer.writer.Seek(muxer.mdatOffset, io.SeekStart); err != nil {
             return
         }
         tmpdata := make([]byte, 4)

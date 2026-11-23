@@ -3,6 +3,7 @@ package mp4
 import (
 	"encoding/binary"
 	"io"
+	"math"
 )
 
 // aligned(8) class ChunkOffsetBox
@@ -132,18 +133,19 @@ func (co64 *ChunkLargeOffsetBox) Encode() (int, []byte) {
 	return offset, buf
 }
 
-func makeStco(stco *movstco) (boxdata []byte) {
-
-	if stco.entryCount > 0 && stco.chunkOffsetlist[stco.entryCount-1] > 0xFFFFFFFF {
-		co64 := NewChunkLargeOffsetBox()
-		co64.stco = stco
-		_, boxdata = co64.Encode()
-	} else {
-		stcobox := NewChunkOffsetBox()
-		stcobox.stco = stco
-		_, boxdata = stcobox.Encode()
+func makeStco(stco *movstco) []byte {
+	for _, offset := range stco.chunkOffsetlist[:stco.entryCount] {
+		if offset > math.MaxUint32 {
+			co64 := NewChunkLargeOffsetBox()
+			co64.stco = stco
+			_, box := co64.Encode()
+			return box
+		}
 	}
-	return
+	stcobox := NewChunkOffsetBox()
+	stcobox.stco = stco
+	_, box := stcobox.Encode()
+	return box
 }
 
 func decodeStcoBox(demuxer *MovDemuxer) (err error) {
