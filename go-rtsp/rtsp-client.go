@@ -440,11 +440,14 @@ func (client *RtspClient) handleDescribe(res *RtspResponse) (err error) {
     }
 
     if client.sdpContext.ControlUrl == "" {
-        return errors.New("unsupport empty aggregate control url in session level descriptions")
-    }
-    client.sdpContext.ControlUrl, err = getControlURL(client.sdpContext.ControlUrl)
-    if err != nil {
-        return err
+        if len(client.sdpContext.Medias) != 1 || client.sdpContext.Medias[0].ControlUrl == "" {
+            return errors.New("missing RTSP control URL")
+        }
+    } else {
+        client.sdpContext.ControlUrl, err = getControlURL(client.sdpContext.ControlUrl)
+        if err != nil {
+            return err
+        }
     }
     for _, media := range client.sdpContext.Medias {
         fmtpHandle := sdp.CreateFmtpParamParser(media.EncodeName)
@@ -594,7 +597,11 @@ func (client *RtspClient) handleSetup(res *RtspResponse) error {
         req = &recordReq
         client.reponseHandler = client.handleRecord
     } else {
-        playReq := makePlay(client.sdpContext.ControlUrl, client.cseq)
+        playURL := client.sdpContext.ControlUrl
+        if playURL == "" {
+            playURL = lastMedia.ControlUrl
+        }
+        playReq := makePlay(playURL, client.cseq)
         req = &playReq
         client.reponseHandler = client.handlePlay
     }

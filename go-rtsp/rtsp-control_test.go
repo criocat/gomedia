@@ -200,3 +200,22 @@ func TestPlayRTPInfoHeader(t *testing.T) {
 		t.Errorf("encoded PLAY response = %q", wire)
 	}
 }
+
+func TestRTSPPlaysOneTrackWithoutAggregateControl(t *testing.T) {
+	description := strings.Replace(controlTestSDP, "a=control:*\r\n", "", 1) + "a=control:audio\r\n"
+	handler := &controlTestClient{}
+	client, sent := startControlTestClient(t, handler, description)
+	const trackURL = "rtsp://localhost/source/audio"
+	if !strings.HasPrefix((*sent)[2], "SETUP "+trackURL+" RTSP/1.0\r\n") {
+		t.Fatalf("SETUP did not use %q, got %q", trackURL, (*sent)[2])
+	}
+	feedControlMessage(t, client, "RTSP/1.0 200 OK\r\nCSeq: 3\r\nSession: 12345678\r\n"+
+		"Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n")
+	if len(*sent) != 4 || !strings.HasPrefix((*sent)[3], "PLAY "+trackURL+" RTSP/1.0\r\n") {
+		t.Fatalf("PLAY did not use %q, got %q", trackURL, *sent)
+	}
+	feedControlMessage(t, client, "RTSP/1.0 200 OK\r\nCSeq: 4\r\nSession: 12345678\r\n\r\n")
+	if client.state != STATE_Playing {
+		t.Errorf("RTSP client state = %d, want Playing", client.state)
+	}
+}

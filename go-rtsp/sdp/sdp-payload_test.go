@@ -27,3 +27,18 @@ func TestSDPUsesAttributesForPreferredPayload(t *testing.T) {
 		t.Errorf("wrong static payload configuration: %+v", static)
 	}
 }
+
+func TestSDPRTPMapAudioDefaultsToMono(t *testing.T) {
+	var parsed Sdp
+	input := "m=audio 5000 RTP/AVP 97\r\na=rtpmap:97 PCMA/8000\r\n" +
+		"m=audio 5002 RTP/AVP 98\r\na=rtpmap:98 MPEG4-GENERIC/48000/2\r\n"
+	if err := parsed.ParserSdp(input); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Medias) != 2 {
+		t.Fatalf("parsed %d media descriptions, want 2", len(parsed.Medias))
+	}
+	if mono, stereo := parsed.Medias[0].ChannelCount, parsed.Medias[1].ChannelCount; mono != 1 || stereo != 2 {
+		t.Errorf("audio channel counts = %d, %d; want 1, 2", mono, stereo)
+	}
+}

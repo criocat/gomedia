@@ -239,8 +239,11 @@ func (sdp *Sdp) ParserSdp(sdpContent string) error {
                     media.PayloadType = rtpMap.PayloadType
                     media.EncodeName = rtpMap.EncodeName
                     media.ClockRate = rtpMap.ClockRate
-                    if media.MediaType == "audio" && rtpMap.EncodParam != "" {
-                        media.ChannelCount, _ = strconv.Atoi(rtpMap.EncodParam)
+                    if media.MediaType == "audio" {
+                        media.ChannelCount = 1
+                        if rtpMap.EncodParam != "" {
+                            media.ChannelCount, _ = strconv.Atoi(rtpMap.EncodParam)
+                        }
                     }
                 }
             } else if attrName == "control" {
