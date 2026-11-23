@@ -2,6 +2,7 @@ package rtcp
 
 import (
     "encoding/binary"
+    "errors"
 )
 
 // 0                   1                   2                   3
@@ -62,6 +63,9 @@ func (pkt *SenderReport) Decode(data []byte) error {
         return err
     }
     pkt.RC = data[0] & 0x1f
+    if int(pkt.PayloadLen) < 24 + int(pkt.RC)*reportBlockSize {
+        return errors.New("incomplete RTCP sender report")
+    }
     pkt.SSRC = binary.BigEndian.Uint32(data[4:])
     pkt.NTP = binary.BigEndian.Uint64(data[8:])
     pkt.RtpTimestamp = binary.BigEndian.Uint32(data[16:])

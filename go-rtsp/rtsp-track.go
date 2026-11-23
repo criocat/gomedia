@@ -288,18 +288,23 @@ func readInterleavedPacket(packet []byte, tracks map[string]*RtspTrack) (int, er
 }
 
 func (track *RtspTrack) inputRtcp(data []byte) error {
-    pkt := rtcp.Comm{}
-    pkt.Decode(data)
-    switch pkt.PT {
-    case rtcp.RTCP_SR:
-        sr := rtcp.NewSenderReport()
-        sr.Decode(data)
-        if track.recvCtx != nil {
-            track.recvCtx.ReceivedSR(sr)
-            if track.autoSendRR {
+    for len(data) > 0 {
+        var header rtcp.Comm
+        if err := header.Decode(data); err != nil {
+            return err
+        }
+        end := (int(header.Length) + 1) * 4
+        if header.PT == rtcp.RTCP_SR && track.recvCtx != nil {
+            report := rtcp.NewSenderReport()
+            if err := report.Decode(data[:end]); err != nil {
+                return err
+            }
+            track.recvCtx.ReceivedSR(report)
+            if track.autoSendRR && track.onPacket != nil {
                 track.ReceiveReport()
             }
         }
+        data = data[end:]
     }
     return nil
 }
