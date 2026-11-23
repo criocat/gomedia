@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"encoding/binary"
+	"errors"
 	"io"
 )
 
@@ -70,6 +71,22 @@ func (trex *TrackExtendsBox) Encode() (int, []byte) {
 	binary.BigEndian.PutUint32(buf[offset:], trex.DefaultSampleFlags)
 	offset += 4
 	return offset, buf
+}
+
+func decodeTrexBox(demuxer *MovDemuxer, payloadSize uint64) error {
+	// A version-zero trex has four bytes of full-box header and five fields.
+	if payloadSize != 24 {
+		return errors.New("invalid trex box size")
+	}
+	trex := TrackExtendsBox{Box: new(FullBox)}
+	if _, err := trex.Decode(demuxer.reader); err != nil {
+		return err
+	}
+	if demuxer.trackExtends == nil {
+		demuxer.trackExtends = make(map[uint32]TrackExtendsBox)
+	}
+	demuxer.trackExtends[trex.TrackID] = trex
+	return nil
 }
 
 func makeTrexBox(track *mp4track) []byte {

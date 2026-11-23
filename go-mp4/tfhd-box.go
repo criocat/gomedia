@@ -91,10 +91,7 @@ func (tfhd *TrackFragmentHeaderBox) Decode(r io.Reader, size uint32, moofOffset 
     if tfhdFlags&uint32(TF_FLAG_BASE_DATA_OFFSET) > 0 {
         tfhd.BaseDataOffset = binary.BigEndian.Uint64(buf[n:])
         n += 8
-    } else if tfhdFlags&uint32(TF_FLAG_DEAAULT_BASE_IS_MOOF) > 0 {
-        tfhd.BaseDataOffset = moofOffset
     } else {
-        //TODO,In some cases, it is wrong
         tfhd.BaseDataOffset = moofOffset
     }
 
@@ -149,17 +146,44 @@ func (tfhd *TrackFragmentHeaderBox) Encode() (int, []byte) {
 
 func decodeTfhdBox(demuxer *MovDemuxer, size uint32) error {
     tfhd := &TrackFragmentHeaderBox{Box: new(FullBox)}
-    _, err := tfhd.Decode(demuxer.reader, size, uint64(demuxer.moofOffset))
-    for i := 0; i < len(demuxer.tracks); i++ {
-        if demuxer.tracks[i].trackId != tfhd.Track_ID {
+    moofOffset := uint64(demuxer.moofOffset)
+    if _, err := tfhd.Decode(demuxer.reader, size, moofOffset); err != nil {
+        return err
+    }
+    flags := uint32(tfhd.Box.Flags[0])<<16 | uint32(tfhd.Box.Flags[1])<<8 | uint32(tfhd.Box.Flags[2])
+    base := tfhd.BaseDataOffset
+    if flags&(TF_FLAG_BASE_DATA_OFFSET|TF_FLAG_DEAAULT_BASE_IS_MOOF) == 0 {
+        base = demuxer.implicitBaseDataOffset
+    }
+
+    demuxer.nextRunOffset = base
+    if flags&TF_FLAG_BASE_DATA_OFFSET == 0 && base == moofOffset {
+        // Keep support for fragments with a missing first-run offset that
+        // place their media data directly after the moof.
+        demuxer.nextRunOffset = demuxer.implicitBaseDataOffset
+        if demuxer.nextRunOffset == moofOffset {
+            demuxer.nextRunOffset = demuxer.mdatPayloadAfterMoof
+        }
+    }
+
+    defaults := demuxer.trackExtends[tfhd.Track_ID]
+    for _, track := range demuxer.tracks {
+        if track.trackId != tfhd.Track_ID {
             continue
         }
-        demuxer.currentTrack = demuxer.tracks[i]
-        demuxer.tracks[i].defaultDuration = tfhd.DefaultSampleDuration
-        demuxer.tracks[i].defaultSize = tfhd.DefaultSampleSize
-        demuxer.tracks[i].baseDataOffset = tfhd.BaseDataOffset
+        demuxer.currentTrack = track
+        track.baseDataOffset = base
+        track.defaultDuration = defaults.DefaultSampleDuration
+        if flags&TF_FLAG_DEFAULT_SAMPLE_DURATION_PRESENT != 0 {
+            track.defaultDuration = tfhd.DefaultSampleDuration
+        }
+        track.defaultSize = defaults.DefaultSampleSize
+        if flags&TF_FLAG_DEFAULT_SAMPLE_SIZE_PRESENT != 0 {
+            track.defaultSize = tfhd.DefaultSampleSize
+        }
+        break
     }
-    return err
+    return nil
 }
 
 func makeTfhdBox(track *mp4track, offset uint64) []byte {

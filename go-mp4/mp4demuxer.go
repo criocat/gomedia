@@ -75,8 +75,11 @@ type MovDemuxer struct {
     isFragement  bool
     currentTrack *mp4track
     pssh         []PsshBox
-    moofOffset   int64
-    dataOffset   uint32
+    moofOffset             int64
+    implicitBaseDataOffset uint64
+    nextRunOffset          uint64
+    mdatPayloadAfterMoof   uint64
+    trackExtends           map[uint32]TrackExtendsBox
 
 	OnRawSample func(cid MP4_CODEC_TYPE, sample []byte, subSample *SubSample) error
 }
@@ -221,12 +224,15 @@ func (demuxer *MovDemuxer) ReadHead() ([]TrackInfo, error) {
             err = decodeElstBox(demuxer)
         case mov_tag([4]byte{'m', 'v', 'e', 'x'}):
             demuxer.isFragement = true
+        case mov_tag([4]byte{'t', 'r', 'e', 'x'}):
+            err = decodeTrexBox(demuxer, basebox.Size-uint64(headerSize))
         case mov_tag([4]byte{'m', 'o', 'o', 'f'}):
             if demuxer.moofOffset, err = demuxer.reader.Seek(0, io.SeekCurrent); err != nil {
                 break
             }
-            demuxer.moofOffset -= 8
-            demuxer.dataOffset = uint32(basebox.Size) + 8
+            demuxer.moofOffset -= int64(headerSize)
+            demuxer.implicitBaseDataOffset = uint64(demuxer.moofOffset)
+            demuxer.mdatPayloadAfterMoof = uint64(demuxer.moofOffset) + basebox.Size + BasicBoxLen
         case mov_tag([4]byte{'m', 'f', 'h', 'd'}):
             err = decodeMfhdBox(demuxer)
         case mov_tag([4]byte{'t', 'r', 'a', 'f'}):

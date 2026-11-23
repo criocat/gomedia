@@ -4,6 +4,7 @@ import (
     "encoding/binary"
     "errors"
     "io"
+    "math"
     "math/bits"
 )
 
@@ -167,7 +168,7 @@ func (trun *TrackRunBox) Encode() (int, []byte) {
 
 func decodeTrunBox(demuxer *MovDemuxer, size uint32) (err error) {
     trun := TrackRunBox{Box: new(FullBox)}
-    if _, err = trun.Decode(demuxer.reader, size, uint32(demuxer.dataOffset)); err != nil {
+    if _, err = trun.Decode(demuxer.reader, size, 0); err != nil {
         return err
     }
 
@@ -175,21 +176,26 @@ func decodeTrunBox(demuxer *MovDemuxer, size uint32) (err error) {
         return errors.New("current track is nil")
     }
 
-    dataOffset := trun.Dataoffset
+    dataOffset := demuxer.nextRunOffset
+    if trun.Box.Flags[2]&byte(TR_FLAG_DATA_OFFSET) != 0 {
+        dataOffset = demuxer.currentTrack.baseDataOffset + uint64(trun.Dataoffset)
+    }
+    if dataOffset > math.MaxInt64 {
+        return errors.New("fragment sample offset out of range")
+    }
     nextDts := demuxer.currentTrack.startDts
     delta := 0
     var cts int64 = 0
     for _, entry := range trun.EntryList.entrys {
         sample := sampleEntry{}
-        sample.offset = uint64(dataOffset) + demuxer.currentTrack.baseDataOffset
+        sample.offset = dataOffset
         sample.dts = nextDts
         if entry.sampleSize == 0 {
-            dataOffset += int32(demuxer.currentTrack.defaultSize)
             sample.size = uint64(demuxer.currentTrack.defaultSize)
         } else {
-            dataOffset += int32(entry.sampleSize)
             sample.size = uint64(entry.sampleSize)
         }
+        dataOffset += sample.size
 
         if entry.sampleDuration == 0 {
             delta = int(demuxer.currentTrack.defaultDuration)
@@ -202,7 +208,10 @@ func decodeTrunBox(demuxer *MovDemuxer, size uint32) (err error) {
         demuxer.currentTrack.samplelist = append(demuxer.currentTrack.samplelist, sample)
     }
     demuxer.currentTrack.startDts = nextDts
-    demuxer.dataOffset = uint32(dataOffset)
+    if len(trun.EntryList.entrys) > 0 {
+        demuxer.nextRunOffset = dataOffset
+        demuxer.implicitBaseDataOffset = dataOffset
+    }
     return
 }
 
