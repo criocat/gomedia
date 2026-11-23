@@ -3,6 +3,7 @@ package codec
 import (
     "bytes"
     "errors"
+    "sort"
 )
 
 // nal_unit_header() {
@@ -83,16 +84,20 @@ func (vps *VPS) Decode(nalu []byte) {
     vps.Vps_reserved_0xffff_16bits = bs.Uint16(16)
     vps.Ptl = Profile_tier_level(1, vps.Vps_max_sub_layers_minus1, bs)
     vps.Vps_sub_layer_ordering_info_present_flag = bs.Uint8(1)
-    var i int
-    if vps.Vps_sub_layer_ordering_info_present_flag > 0 {
-        i = 0
-    } else {
-        i = int(vps.Vps_max_sub_layers_minus1)
+    firstSublayer := 0
+    lastSublayer := int(vps.Vps_max_sub_layers_minus1)
+    if vps.Vps_sub_layer_ordering_info_present_flag == 0 {
+        firstSublayer = lastSublayer
     }
-    for ; i <= int(vps.Vps_max_sub_layers_minus1); i++ {
+    for i := firstSublayer; i <= lastSublayer; i++ {
         vps.Vps_max_dec_pic_buffering_minus1[i] = bs.ReadUE()
         vps.Vps_max_num_reorder_pics[i] = bs.ReadUE()
         vps.Vps_max_latency_increase_plus1[i] = bs.ReadUE()
+    }
+    for i := 0; i < firstSublayer; i++ {
+        vps.Vps_max_dec_pic_buffering_minus1[i] = vps.Vps_max_dec_pic_buffering_minus1[lastSublayer]
+        vps.Vps_max_num_reorder_pics[i] = vps.Vps_max_num_reorder_pics[lastSublayer]
+        vps.Vps_max_latency_increase_plus1[i] = vps.Vps_max_latency_increase_plus1[lastSublayer]
     }
     vps.Vps_max_layer_id = bs.Uint8(6)
     vps.Vps_num_layer_sets_minus1 = bs.ReadUE()
@@ -259,9 +264,9 @@ func (sps *H265RawSPS) Decode(nalu []byte) {
     if num_short_term_ref_pic_sets > 64 {
         panic("beyond HEVC_MAX_SHORT_TERM_REF_PIC_SETS")
     }
-    var num_delta_pocs [64]uint32
+    var deltaPOCs []int64
     for i := 0; i < int(num_short_term_ref_pic_sets); i++ {
-        parse_rps(i, num_short_term_ref_pic_sets, num_delta_pocs, bs)
+        deltaPOCs = parseSPSShortTermRefPicSet(bs, i, deltaPOCs)
     }
     if bs.GetBit() == 1 {
         num_long_term_ref_pics_sps := bs.ReadUE()
@@ -458,39 +463,59 @@ func scaling_list_data(bs *BitStream) {
     }
 }
 
-func parse_rps(rps_idx int, nums_rps uint64, num_delta_pocs [64]uint32, bs *BitStream) {
-    if rps_idx > 0 && bs.GetBit() > 0 {
-        if rps_idx > int(nums_rps) {
-            panic("rps_idx > int(nums_rps)")
+func parseSPSShortTermRefPicSet(bs *BitStream, index int, previous []int64) []int64 {
+    if index > 0 && bs.GetBit() == 1 {
+        sign := bs.GetBit()
+        delta := int64(bs.ReadUE()) + 1
+        if sign == 1 {
+            delta = -delta
         }
-        bs.SkipBits(1)
-        bs.ReadUE()
-        num_delta_pocs[rps_idx] = 0
-        for i := uint32(0); i <= num_delta_pocs[rps_idx-1]; i++ {
-            var use_delta_flag uint8
-            var used_by_curr_pic_flag uint8 = bs.GetBit()
-            if used_by_curr_pic_flag == 0 {
-                use_delta_flag = bs.GetBit()
+        current := make([]int64, 0, len(previous)+1)
+        // The last prediction entry applies the delta to the current picture.
+        for i := 0; i <= len(previous); i++ {
+            include := bs.GetBit() == 1 // used_by_curr_pic_flag
+            if !include {
+                include = bs.GetBit() == 1 // use_delta_flag
             }
-            if use_delta_flag > 0 || used_by_curr_pic_flag > 0 {
-                num_delta_pocs[rps_idx]++
+            poc := delta
+            if i < len(previous) {
+                poc += previous[i]
+            }
+            if include && poc != 0 {
+                current = append(current, poc)
             }
         }
-    } else {
-        num_negative_pics := bs.ReadUE()
-        num_positive_pics := bs.ReadUE()
-        if (num_negative_pics+num_positive_pics)*2 > uint64(bs.RemainBits()) {
-            panic("(num_negative_pics + num_positive_pics) * 2> uint64(bs.RemainBits())")
-        }
-        for i := 0; i < int(num_negative_pics); i++ {
-            bs.ReadUE()
-            bs.SkipBits(1)
-        }
-        for i := 0; i < int(num_positive_pics); i++ {
-            bs.ReadUE()
-            bs.SkipBits(1)
-        }
+        // Later sets address negative entries first, nearest to zero first
+        // within each sign.
+        sort.Slice(current, func(i, j int) bool {
+            if current[i] < 0 && current[j] < 0 {
+                return current[i] > current[j]
+            }
+            return current[i] < current[j]
+        })
+        return current
     }
+
+    negative := bs.ReadUE()
+    positive := bs.ReadUE()
+    maxPictures := uint64(bs.RemainBits() / 2)
+    if negative > maxPictures || positive > maxPictures-negative {
+        panic("short-term reference pictures exceed remaining bits")
+    }
+    current := make([]int64, negative+positive)
+    var poc int64
+    for i := range current[:negative] {
+        poc -= int64(bs.ReadUE()) + 1
+        current[i] = poc
+        bs.SkipBits(1) // used_by_curr_pic_s0_flag
+    }
+    poc = 0
+    for i := range current[negative:] {
+        poc += int64(bs.ReadUE()) + 1
+        current[int(negative)+i] = poc
+        bs.SkipBits(1) // used_by_curr_pic_s1_flag
+    }
+    return current
 }
 
 type H265RawPPS struct {
