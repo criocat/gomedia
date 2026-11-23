@@ -75,28 +75,29 @@ func (pkt *SenderReport) Decode(data []byte) error {
             return err
         }
         pkt.Blocks = append(pkt.Blocks, block)
-        offset += 24
+        offset += reportBlockSize
     }
     return nil
 }
 
+// Encode writes a single Sender Report with up to 31 blocks.
+// Additional blocks can be sent in a Receiver Report.
 func (pkt *SenderReport) Encode() []byte {
-    pkt.Comm.Length = pkt.calcLength()
+    const headerSize = 28
+    blocks := limitReportBlocks(pkt.Blocks)
+    pkt.RC = uint8(len(blocks))
+    pkt.Comm.Length = uint16((headerSize+reportBlockSize*len(blocks))/4 - 1)
     data := pkt.Comm.Encode()
-    data[0] |= pkt.RC & 0x1f
+    data[0] |= pkt.RC
     binary.BigEndian.PutUint32(data[4:], pkt.SSRC)
     binary.BigEndian.PutUint64(data[8:], pkt.NTP)
     binary.BigEndian.PutUint32(data[16:], pkt.RtpTimestamp)
     binary.BigEndian.PutUint32(data[20:], pkt.SendPacketCount)
     binary.BigEndian.PutUint32(data[24:], pkt.SendOctetCount)
-    offset := 28
-    for _, block := range pkt.Blocks {
+    offset := headerSize
+    for _, block := range blocks {
         copy(data[offset:], block.Encode())
-        offset += 24
+        offset += reportBlockSize
     }
     return data
-}
-
-func (pkt *SenderReport) calcLength() uint16 {
-    return uint16(24+(24*len(pkt.Blocks))) / 4
 }
