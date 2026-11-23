@@ -98,6 +98,7 @@ func CreateMp4Demuxer(r io.ReadSeeker) *MovDemuxer {
 
 func (demuxer *MovDemuxer) ReadHead() ([]TrackInfo, error) {
     infos := make([]TrackInfo, 0, 2)
+    mediaData := mov_tag([4]byte{'m', 'd', 'a', 't'})
     var err error
     for {
         fullbox := FullBox{}
@@ -107,27 +108,30 @@ func (demuxer *MovDemuxer) ReadHead() ([]TrackInfo, error) {
             err = boxErr
             break
         }
-        if basebox.Size < uint64(headerSize) {
-            err = errors.New("mp4 Parser error")
-            break
-        }
-        switch mov_tag(basebox.Type) {
-        case mov_tag([4]byte{'f', 't', 'y', 'p'}):
-            err = decodeFtypBox(demuxer, uint32(basebox.Size))
-        case mov_tag([4]byte{'f', 'r', 'e', 'e'}):
-            err = decodeFreeBox(demuxer, uint32(basebox.Size))
-        case mov_tag([4]byte{'m', 'd', 'a', 't'}):
-            payloadSize := basebox.Size - uint64(headerSize)
-            if payloadSize > 1<<63-1 {
-                err = errors.New("mdat payload too large")
+        boxType := mov_tag(basebox.Type)
+        mediaDataToEOF := boxType == mediaData && basebox.Size == 0
+        var payloadSize int64
+        if !mediaDataToEOF {
+            if basebox.Size < uint64(headerSize) || basebox.Size-uint64(headerSize) > math.MaxInt64 {
+                err = errors.New("invalid MP4 box size")
                 break
             }
+            payloadSize = int64(basebox.Size - uint64(headerSize))
+        }
+        switch boxType {
+        case mov_tag([4]byte{'f', 't', 'y', 'p'}):
+            err = decodeFtypBox(demuxer, uint32(basebox.Size))
+        case mediaData:
             var currentOffset int64
             if currentOffset, err = demuxer.reader.Seek(0, io.SeekCurrent); err != nil {
                 break
             }
             demuxer.mdatOffset = append(demuxer.mdatOffset, uint64(currentOffset))
-            _, err = demuxer.reader.Seek(int64(payloadSize), io.SeekCurrent)
+            if mediaDataToEOF {
+                _, err = demuxer.reader.Seek(0, io.SeekEnd)
+            } else {
+                _, err = demuxer.reader.Seek(payloadSize, io.SeekCurrent)
+            }
         case mov_tag([4]byte{'m', 'o', 'o', 'v'}):
             var currentOffset int64
             if currentOffset, err = demuxer.reader.Seek(0, io.SeekCurrent); err != nil {
@@ -137,7 +141,7 @@ func (demuxer *MovDemuxer) ReadHead() ([]TrackInfo, error) {
             if offset, err = demuxer.reader.Seek(0, io.SeekEnd); err != nil {
                 break
             }
-            if offset-currentOffset < int64(basebox.Size)-BasicBoxLen {
+            if offset-currentOffset < payloadSize {
                 err = errors.New("incomplete mp4 file")
                 break
             }
@@ -250,14 +254,12 @@ func (demuxer *MovDemuxer) ReadHead() ([]TrackInfo, error) {
 		 	err = decodeSaizBox(demuxer, uint32(basebox.Size))
 		case mov_tag([4]byte{'s', 'a', 'i', 'o'}):
 			err = decodeSaioBox(demuxer, uint32(basebox.Size))
-		case mov_tag([4]byte{'u', 'u', 'i', 'd'}):
-			_, err = demuxer.reader.Seek(int64(basebox.Size)-BasicBoxLen-16, io.SeekCurrent)
 		case mov_tag([4]byte{'s', 'g', 'p', 'd'}):
 			err = decodeSgpdBox(demuxer, uint32(basebox.Size))
         case mov_tag([4]byte{'w', 'a', 'v', 'e'}):
             err = decodeWaveBox(demuxer)
         default:
-            _, err = demuxer.reader.Seek(int64(basebox.Size)-BasicBoxLen, io.SeekCurrent)
+            _, err = demuxer.reader.Seek(payloadSize, io.SeekCurrent)
         }
         if err != nil {
             break
