@@ -170,3 +170,33 @@ func TestClientRetriesSetupForSameTrack(t *testing.T) {
 		})
 	}
 }
+
+type rtpInfoTestClient struct {
+	ClientHandle
+	info *RtpInfo
+}
+
+func (handler *rtpInfoTestClient) HandlePlay(_ *RtspClient, _ RtspResponse, _ *RangeTime, info *RtpInfo) error {
+	handler.info = info
+	return nil
+}
+
+func TestPlayRTPInfoHeader(t *testing.T) {
+	const value = "url=rtsp://localhost/live/trackID=1;seq=100;rtptime=9000"
+	for _, name := range []string{"RTP-Info", "rtp-info", "RTPInfo"} {
+		t.Run(name, func(t *testing.T) {
+			handler := &rtpInfoTestClient{}
+			client := &RtspClient{handle: handler}
+			client.reponseHandler = client.handlePlay
+			feedControlMessage(t, client, "RTSP/1.0 200 OK\r\nCSeq: 4\r\n"+name+": "+value+"\r\n\r\n")
+			want := RtpInfo{Url: "rtsp://localhost/live/trackID=1", Seq: 100, Rtptime: 9000}
+			if handler.info == nil || *handler.info != want {
+				t.Errorf("PLAY callback RTP-Info = %+v, want %+v", handler.info, want)
+			}
+		})
+	}
+	response := RtspResponse{Version: RTSP_1_0, StatusCode: 200, Fileds: HeadFiled{RTPInfo: value}}
+	if wire := response.Encode(); !strings.Contains(wire, "\r\nRTP-Info: "+value+"\r\n") {
+		t.Errorf("encoded PLAY response = %q", wire)
+	}
+}

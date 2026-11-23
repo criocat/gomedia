@@ -111,7 +111,7 @@ const (
     Referer           = "Referer"
     Require           = "Require"
     RetryAfter        = "RetryAfter"
-    RTPInfo           = "RTPInfo"
+    RTPInfo           = "RTP-Info"
     Scale             = "Scale"
     Session           = "Session"
     Server            = "Server"
@@ -146,6 +146,9 @@ func rtspHeaderName(name string) string {
     name = strings.TrimSpace(name)
     if strings.EqualFold(name, CSeq) {
         return CSeq
+    }
+    if strings.EqualFold(name, RTPInfo) || strings.EqualFold(name, "RTPInfo") {
+        return RTPInfo
     }
     return strings.Title(name)
 }
