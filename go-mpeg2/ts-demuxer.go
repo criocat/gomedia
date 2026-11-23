@@ -8,9 +8,30 @@ import (
 )
 
 type pakcet_t struct {
-    payload []byte
-    pts     uint64
-    dts     uint64
+    payload         []byte
+    pts             uint64
+    dts             uint64
+    videoTimestamps []tsVideoTimestamp
+}
+
+type tsVideoTimestamp struct {
+    offset   int // Start of the PES payload in the buffered video data.
+    pts, dts uint64
+}
+
+func (pkg *pakcet_t) applyVideoTimestamps(frameStart int) {
+    consumed := 0
+    for _, timestamp := range pkg.videoTimestamps {
+        if timestamp.offset > frameStart {
+            break
+        }
+        pkg.pts, pkg.dts = timestamp.pts, timestamp.dts
+        consumed++
+    }
+    if consumed != 0 {
+        remaining := copy(pkg.videoTimestamps, pkg.videoTimestamps[consumed:])
+        pkg.videoTimestamps = pkg.videoTimestamps[:remaining]
+    }
 }
 
 func newPacket_t(size uint32) *pakcet_t {
@@ -273,7 +294,7 @@ func (demuxer *TSDemuxer) readPES(stream *tsstream, packet *TSPacket, payload []
     if stream.pes_sid == PES_STREAM_AUDIO {
         demuxer.doAudioPesPacket(stream, start)
     } else if stream.pes_sid == PES_STREAM_VIDEO {
-        demuxer.doVideoPesPacket(stream)
+        demuxer.doVideoPesPacket(stream, start == 1 && pes.PTS_DTS_flags&2 != 0)
     }
     return nil
 }
@@ -370,7 +391,9 @@ func (demuxer *TSDemuxer) flushStream(stream *tsstream) {
     if stream.cid == TS_STREAM_H264 || stream.cid == TS_STREAM_H265 {
         payload = stripLeadingVideoAUD(stream.cid, payload)
     }
-    demuxer.OnFrame(stream.cid, payload, stream.pkg.pts/90, stream.pkg.dts/90)
+    if len(payload) != 0 {
+        demuxer.OnFrame(stream.cid, payload, stream.pkg.pts/90, stream.pkg.dts/90)
+    }
     stream.pkg = nil
 }
 
@@ -386,7 +409,7 @@ func stripLeadingVideoAUD(cid TS_STREAM_TYPE, frame []byte) []byte {
     return frame[audLen:]
 }
 
-func (demuxer *TSDemuxer) doVideoPesPacket(stream *tsstream) {
+func (demuxer *TSDemuxer) doVideoPesPacket(stream *tsstream, hasTimestamp bool) {
     if stream.cid != TS_STREAM_H264 && stream.cid != TS_STREAM_H265 {
         return
     }
@@ -394,6 +417,13 @@ func (demuxer *TSDemuxer) doVideoPesPacket(stream *tsstream) {
         stream.pkg = newPacket_t(1024)
         stream.pkg.pts = stream.pts
         stream.pkg.dts = stream.dts
+    }
+    if hasTimestamp {
+        stream.pkg.videoTimestamps = append(stream.pkg.videoTimestamps, tsVideoTimestamp{
+            offset: len(stream.pkg.payload),
+            pts:    stream.pts,
+            dts:    stream.dts,
+        })
     }
     stream.pkg.payload = append(stream.pkg.payload, stream.pes_pkg.Pes_payload...)
     demuxer.splitVideoAccessUnits(stream)
@@ -425,6 +455,9 @@ func (demuxer *TSDemuxer) splitVideoAccessUnits(stream *tsstream) {
     data := stream.pkg.payload
     start, startCodeSize := codec.FindStartCode(data, 0)
     frameStart := start
+    if frameStart >= 0 {
+        stream.pkg.applyVideoTimestamps(frameStart)
+    }
     headerSize := 1
     if stream.cid == TS_STREAM_H265 {
         headerSize = 2
@@ -464,8 +497,7 @@ func (demuxer *TSDemuxer) splitVideoAccessUnits(stream *tsstream) {
                 demuxer.OnFrame(stream.cid, frame, stream.pkg.pts/90, stream.pkg.dts/90)
             }
             frameStart = start
-            stream.pkg.pts = stream.pts
-            stream.pkg.dts = stream.dts
+            stream.pkg.applyVideoTimestamps(frameStart)
             hasVCL = false
         }
         hasVCL = hasVCL || isVCL
@@ -475,5 +507,8 @@ func (demuxer *TSDemuxer) splitVideoAccessUnits(stream *tsstream) {
     if frameStart > 0 {
         size := copy(data, data[frameStart:])
         stream.pkg.payload = data[:size]
+        for i := range stream.pkg.videoTimestamps {
+            stream.pkg.videoTimestamps[i].offset -= frameStart
+        }
     }
 }

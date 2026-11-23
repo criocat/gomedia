@@ -3,7 +3,10 @@ package mpeg2
 import (
 	"bytes"
 	"encoding/hex"
+	"fmt"
 	"testing"
+
+	"github.com/yapingcat/gomedia/go-codec"
 )
 
 func TestTSDemuxerSplitsConsecutiveVideoAccessUnits(t *testing.T) {
@@ -40,6 +43,50 @@ func TestTSDemuxerUsesNewPESTimestampsForFollowingAccessUnits(t *testing.T) {
 				if pts, dts := got[i].pts, got[i].dts; pts != want[0] || dts != want[1] {
 					t.Errorf("frame %d PTS/DTS = %d/%d, want %d/%d", i, pts, dts, want[0], want[1])
 				}
+			}
+		})
+	}
+}
+
+func TestTSDemuxerKeepsTimestampWhenAccessUnitStartCrossesPES(t *testing.T) {
+	for _, fixture := range tsVideoFixtures {
+		for _, split := range []int{1, 3, 5} {
+			t.Run(fmt.Sprintf("%s/%d", fixture.name, split), func(t *testing.T) {
+				frames := fixture.frames(t)
+				got := demuxRawTSVideo(t, fixture.cid, []tsVideoFrame{
+					{frames[0], 120, 80},
+					{frames[1][:split], 160, 120},
+					{bytes.Join([][]byte{frames[1][split:], frames[2]}, nil), 200, 160},
+				})
+				if len(got) != 3 {
+					t.Fatalf("received %d frames, want 3", len(got))
+				}
+				for i, frame := range got {
+					pts, dts := uint64(120+40*i), uint64(80+40*i)
+					if !bytes.Equal(frame.data, frames[i]) || frame.pts != pts || frame.dts != dts {
+						t.Errorf("frame %d = %x at %d/%d, want %x at %d/%d",
+							i, frame.data, frame.pts, frame.dts, frames[i], pts, dts)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestTSDemuxerDoesNotEmitFrameForTrailingAUD(t *testing.T) {
+	for _, fixture := range tsVideoFixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			frame := fixture.frames(t)[0]
+			aud := H264_AUD_NALU
+			if fixture.cid == TS_STREAM_H265 {
+				aud = H265_AUD_NALU
+			}
+			got := demuxRawTSVideo(t, fixture.cid, []tsVideoFrame{
+				{frame, 120, 80},
+				{aud, 160, 120},
+			})
+			if len(got) != 1 || !bytes.Equal(got[0].data, frame) {
+				t.Fatalf("received %v, want only the complete frame", got)
 			}
 		})
 	}
@@ -97,6 +144,36 @@ func demuxTSVideo(t *testing.T, cid TS_STREAM_TYPE, pes []tsVideoFrame) []tsVide
 			t.Fatal(err)
 		}
 	}
+	return readTSVideoFrames(t, cid, &wire)
+}
+
+func demuxRawTSVideo(t *testing.T, cid TS_STREAM_TYPE, packets []tsVideoFrame) []tsVideoFrame {
+	t.Helper()
+	muxer, wire := tsProgramTestMuxer()
+	program := &table_pmt{pid: 0x200, pm: 1, pcr_pid: 0x100}
+	stream := NewPESStream(program.pcr_pid, cid)
+	writeTSProgramTestPAT(muxer, 0, 0, 0, PmtPair{1, program.pid})
+	writeTSProgramTestPMT(muxer, program, stream)
+	for i, packet := range packets {
+		pes := NewPesPacket()
+		pes.Stream_id = uint8(PES_STREAM_VIDEO)
+		pes.PTS_DTS_flags = 3
+		pes.PES_header_data_length = 10
+		pes.Pts, pes.Dts = packet.pts*90, packet.dts*90
+		pes.Pes_payload = packet.data
+		pes.PES_packet_length = uint16(3 + int(pes.PES_header_data_length) + len(pes.Pes_payload))
+		encoded := codec.NewBitStreamWriter(182)
+		pes.Encode(encoded)
+		if len(encoded.Bits()) > 182 {
+			t.Fatal("test PES must fit into one transport packet")
+		}
+		writeTSTestPayload(muxer, stream.pid, uint8(i), 1, encoded.Bits())
+	}
+	return readTSVideoFrames(t, cid, wire)
+}
+
+func readTSVideoFrames(t *testing.T, cid TS_STREAM_TYPE, wire *bytes.Buffer) []tsVideoFrame {
+	t.Helper()
 	demuxer := NewTSDemuxer()
 	var frames []tsVideoFrame
 	demuxer.OnFrame = func(got TS_STREAM_TYPE, data []byte, pts, dts uint64) {
@@ -105,7 +182,7 @@ func demuxTSVideo(t *testing.T, cid TS_STREAM_TYPE, pes []tsVideoFrame) []tsVide
 		}
 		frames = append(frames, tsVideoFrame{append([]byte(nil), data...), pts, dts})
 	}
-	if err := demuxer.Input(&wire); err != nil {
+	if err := demuxer.Input(wire); err != nil {
 		t.Fatal(err)
 	}
 	return frames
