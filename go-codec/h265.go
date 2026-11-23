@@ -818,6 +818,7 @@ func (hvcc *HEVCRecordConfiguration) UpdateSPS(sps []byte) {
             }
             copy(nalu.Nalu, sps)
             arrays.NalUnits = append(arrays.NalUnits, nalu)
+            arrays.NumNalus = uint16(len(arrays.NalUnits))
             needUpdate = true
         }
         break
@@ -836,6 +837,7 @@ func (hvcc *HEVCRecordConfiguration) UpdateSPS(sps []byte) {
         copy(nu.Nalu, sps)
         nua.NalUnits[0] = nu
         hvcc.Arrays = append(hvcc.Arrays, nua)
+        hvcc.NumOfArrays = uint8(len(hvcc.Arrays))
         needUpdate = true
     }
     if needUpdate {
@@ -885,6 +887,7 @@ func (hvcc *HEVCRecordConfiguration) UpdatePPS(pps []byte) {
             }
             copy(nalu.Nalu, pps)
             arrays.NalUnits = append(arrays.NalUnits, nalu)
+            arrays.NumNalus = uint16(len(arrays.NalUnits))
             needUpdate = true
         }
         break
@@ -903,6 +906,7 @@ func (hvcc *HEVCRecordConfiguration) UpdatePPS(pps []byte) {
         copy(nu.Nalu, pps)
         nua.NalUnits[0] = nu
         hvcc.Arrays = append(hvcc.Arrays, nua)
+        hvcc.NumOfArrays = uint8(len(hvcc.Arrays))
         needUpdate = true
     }
     if needUpdate {
@@ -954,6 +958,7 @@ func (hvcc *HEVCRecordConfiguration) UpdateVPS(vps []byte) {
             }
             copy(nalu.Nalu, vps)
             arrays.NalUnits = append(arrays.NalUnits, nalu)
+            arrays.NumNalus = uint16(len(arrays.NalUnits))
             needUpdate = true
         }
         break
@@ -972,10 +977,11 @@ func (hvcc *HEVCRecordConfiguration) UpdateVPS(vps []byte) {
         copy(nu.Nalu, vps)
         nua.NalUnits[0] = nu
         hvcc.Arrays = append(hvcc.Arrays, nua)
+        hvcc.NumOfArrays = uint8(len(hvcc.Arrays))
         needUpdate = true
     }
     if needUpdate {
-        hvcc.NumTemporalLayers = uint8(Max(int(hvcc.NumTemporalLayers), int(rawvps.Vps_max_layers_minus1+1)))
+        hvcc.NumTemporalLayers = uint8(Max(int(hvcc.NumTemporalLayers), int(rawvps.Vps_max_sub_layers_minus1+1)))
         hvcc.updatePtl(rawvps.Ptl)
     }
 }
