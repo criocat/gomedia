@@ -6,6 +6,7 @@ import (
     "errors"
     "fmt"
     "math/rand"
+    "net/url"
     "strings"
     "time"
 
@@ -195,15 +196,16 @@ func (server *RtspServer) handleRequest(req []byte) (ret int, err error) {
     case SETUP:
         foundTrack := false
         for _, track := range server.tracks {
-            if !strings.Contains(request.Uri, track.uri) {
+            implicitControl := track.uri == "" && len(server.tracks) == 1
+            if !implicitControl && !matchesTrackControl(request.Uri, track.uri) {
                 continue
             }
             foundTrack = true
-            track.uri = request.Uri
             transport := NewRtspTransport()
             transport.DecodeString(request.Fileds[Transport])
             server.handle.HandleSetup(server, request, &res, transport, track)
             if res.StatusCode == 200 {
+                track.uri = request.Uri
                 if server.sessionId == "" {
                     number := []byte("0123456789")
                     b := make([]byte, 10)
@@ -239,11 +241,12 @@ func (server *RtspServer) handleRequest(req []byte) (ret int, err error) {
             res.StatusCode = BAD_REQUEST
         }
     case ANNOUNCE:
-        if err = server.sdpContext.ParserSdp(request.Body); err != nil {
+        description := &sdp.Sdp{Attrs: map[string]string{"control": "*"}}
+        if err = description.ParserSdp(request.Body); err != nil {
             return
         }
-        server.isRecord = true
-        for _, media := range server.sdpContext.Medias {
+        tracks := make(map[string]*RtspTrack, len(description.Medias))
+        for _, media := range description.Medias {
             fmtpHandle := sdp.CreateFmtpParamParser(media.EncodeName)
             if fmtpHandle != nil {
                 fmtpHandle.Load(media.Attrs["fmtp"])
@@ -257,9 +260,12 @@ func (server *RtspServer) handleRequest(req []byte) (ret int, err error) {
                 track = NewMetaTrack(NewApplicatioCodec(media.EncodeName, uint8(media.PayloadType)))
             }
             track.uri = media.ControlUrl
-            server.tracks[media.MediaType] = track
+            tracks[media.MediaType] = track
         }
-        server.handle.HandleAnnounce(server, request, server.tracks)
+        server.isRecord = true
+        server.sdpContext = description
+        server.tracks = tracks
+        server.handle.HandleAnnounce(server, request, tracks)
     case PLAY:
         var tr *RangeTime = nil
         var info []*RtpInfo
@@ -319,6 +325,31 @@ func (server *RtspServer) handleRequest(req []byte) (ret int, err error) {
         server.handle.HandleGetParameter(server, request, &res)
     }
     return ret, server.sendRespones(request, res)
+}
+
+func matchesTrackControl(requestURI, controlURI string) bool {
+    target, err := url.Parse(requestURI)
+    if err != nil {
+        return false
+    }
+    control, err := url.Parse(controlURI)
+    if err != nil || (control.RawQuery != "" && control.RawQuery != target.RawQuery) {
+        return false
+    }
+    if control.Scheme != "" && !strings.EqualFold(control.Scheme, target.Scheme) {
+        return false
+    }
+    if control.Host != "" && !strings.EqualFold(control.Host, target.Host) {
+        return false
+    }
+    targetPath, controlPath := target.EscapedPath(), control.EscapedPath()
+    if control.IsAbs() || control.Host != "" || strings.HasPrefix(controlPath, "/") {
+        return targetPath == controlPath
+    }
+    if controlPath == "" {
+        return control.RawQuery != ""
+    }
+    return targetPath == controlPath || strings.HasSuffix(targetPath, "/"+controlPath)
 }
 
 func (server *RtspServer) handleUnAuth(request RtspRequest) error {
