@@ -95,3 +95,25 @@ func TestRTPAACDiscardsIncompleteAccessUnitOnSequenceGap(t *testing.T) {
 		t.Errorf("AAC frames after a lost fragment = %x, want %x", frames, want)
 	}
 }
+
+func TestRTPAACPackSizeFitsAUHeader(t *testing.T) {
+	packer := NewAACPacker(97, 1, 123, 9000)
+	var sizes []uint16
+	packer.OnPacket(func(wire []byte) error {
+		var packet RtpPacket
+		if err := packet.Decode(wire); err != nil {
+			return err
+		}
+		sizes = append(sizes, binary.BigEndian.Uint16(packet.Payload[2:])>>3)
+		return nil
+	})
+	if err := packer.Pack(make([]byte, 8191), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := packer.Pack(make([]byte, 8192), 1024); err == nil {
+		t.Error("accepted a frame larger than the 13-bit AU-size field")
+	}
+	if want := []uint16{8191}; !reflect.DeepEqual(sizes, want) {
+		t.Errorf("sent AU lengths = %v, want %v", sizes, want)
+	}
+}

@@ -2,6 +2,7 @@ package rtp
 
 import (
 	"bytes"
+	"reflect"
 	"testing"
 )
 
@@ -28,5 +29,26 @@ func TestRTPDecodeClearsOptionsWhenReused(t *testing.T) {
 	}
 	if len(packet.Extensions) != 0 || len(packet.Padding) != 0 || !bytes.Equal(packet.Encode(), plain) {
 		t.Errorf("reused packet extensions = %x, padding = %x, wire = %x", packet.Extensions, packet.Padding, packet.Encode())
+	}
+}
+
+func TestRTPHeaderEncodesActualCSRCCount(t *testing.T) {
+	for _, count := range []int{2, 15, 16} {
+		sources := make([]uint32, count)
+		for i := range sources {
+			sources[i] = uint32(1000 + i)
+		}
+		payload := []byte{0x21, 0x11}
+		sent := RtpPacket{Header: RtpHdr{PayloadType: 8, SSRC: 100, CSRC: sources}, Payload: payload}
+		var received RtpPacket
+		if err := received.Decode(sent.Encode()); err != nil {
+			t.Fatal(err)
+		}
+		if count > 15 {
+			count = 15
+		}
+		if int(received.Header.CC) != count || !reflect.DeepEqual(received.Header.CSRC, sources[:count]) || !bytes.Equal(received.Payload, payload) {
+			t.Errorf("RTP CSRC = %v and payload = %x, want %v and %x", received.Header.CSRC, received.Payload, sources[:count], payload)
+		}
 	}
 }

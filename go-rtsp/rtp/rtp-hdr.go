@@ -34,17 +34,20 @@ type RtpHdr struct {
 // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
 func (head *RtpHdr) Encode() []byte {
-    data := make([]byte, RTP_FIX_HEAD_LEN)
-    data[0] = byte(0x80) | (head.PaddingFlag & 0x01 << 5) | (head.ExtensionFlag & 0x01 << 4) | (head.CC & 0x0F)
+    sources := head.CSRC
+    if len(sources) > 15 {
+        sources = sources[:15]
+    }
+    head.CC = uint8(len(sources))
+    data := make([]byte, RTP_FIX_HEAD_LEN+4*len(sources))
+    data[0] = byte(0x80) | (head.PaddingFlag & 0x01 << 5) | (head.ExtensionFlag & 0x01 << 4) | head.CC
     data[1] = head.Marker&0x01<<7 | head.PayloadType&0x7F
     binary.BigEndian.PutUint16(data[2:], head.SequenceNumber)
     binary.BigEndian.PutUint32(data[4:], head.Timestamp)
     binary.BigEndian.PutUint32(data[8:], head.SSRC)
 
-    for _, csrc := range head.CSRC {
-        tmp := make([]byte, 4)
-        binary.BigEndian.PutUint32(tmp, csrc)
-        data = append(data, tmp...)
+    for i, csrc := range sources {
+        binary.BigEndian.PutUint32(data[RTP_FIX_HEAD_LEN+4*i:], csrc)
     }
     return data
 }

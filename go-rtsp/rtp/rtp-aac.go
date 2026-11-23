@@ -59,6 +59,9 @@ func NewAACPacker(pt uint8, ssrc uint32, sequence uint16, mtu int) *AACPacker {
 }
 
 func (packer *AACPacker) Pack(data []byte, timestamp uint32) error {
+    if len(data) > (1<<13)-1 {
+        return errors.New("AAC access unit exceeds its 13-bit RTP size field")
+    }
     if len(data)+4+RTP_FIX_HEAD_LEN > packer.mtu {
         return errors.New("unsupport fragment aac into multi rtp packet")
     }
