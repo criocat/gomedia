@@ -479,11 +479,38 @@ type H264BitRateCpbSizeCbrFlag struct {
 
 const ExtendedSar = 255
 
+// ITU-T H.264 Table E-1. Index 0 denotes an unspecified ratio.
+var h264SampleAspectRatios = [...]struct{ width, height uint16 }{
+	{0, 0},
+	{1, 1},
+	{12, 11},
+	{10, 11},
+	{16, 11},
+	{40, 33},
+	{24, 11},
+	{20, 11},
+	{32, 11},
+	{80, 33},
+	{18, 11},
+	{15, 11},
+	{64, 33},
+	{160, 99},
+	{4, 3},
+	{3, 2},
+	{2, 1},
+}
+
 func (h264Vui *H264VuiParameters) Decode(bs *BitStream) {
 	h264Vui.AspectRatioInfoPresentFlag = bs.Uint8(1)
+	h264Vui.AspectRatioIdc = 0
+	h264Vui.SarWidth, h264Vui.SarHeight = 0, 0
 
 	if h264Vui.AspectRatioInfoPresentFlag == 1 {
 		h264Vui.AspectRatioIdc = bs.Uint8(8)
+		if idc := h264Vui.AspectRatioIdc; int(idc) < len(h264SampleAspectRatios) {
+			ratio := h264SampleAspectRatios[idc]
+			h264Vui.SarWidth, h264Vui.SarHeight = ratio.width, ratio.height
+		}
 
 		if h264Vui.AspectRatioIdc == ExtendedSar {
 			h264Vui.SarWidth = bs.Uint16(16)
