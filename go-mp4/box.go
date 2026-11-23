@@ -81,24 +81,32 @@ func (box *BasicBox) Decode(r io.Reader) (int, error) {
 }
 
 func (box *BasicBox) Encode() (int, []byte) {
-    nn := 8
-    var buf []byte
-    if box.Size > 0xFFFFFFFF { //just for mdat box
-        buf = make([]byte, 16)
-        binary.BigEndian.PutUint32(buf, 1)
-        copy(buf[4:], box.Type[:])
-        nn += 8
-        binary.BigEndian.PutUint64(buf[8:], box.Size)
-    } else {
-        buf = make([]byte, box.Size)
-        binary.BigEndian.PutUint32(buf, uint32(box.Size))
-        copy(buf[4:], box.Type[:])
-        if bytes.Equal(box.Type[:], []byte("uuid")) {
-            copy(buf[nn:nn+16], box.UserType[:])
-            nn += 16
-        }
+    extendedSize := box.Size > 0xFFFFFFFF
+    hasUserType := bytes.Equal(box.Type[:], []byte("uuid"))
+    sizeHeaderLen := BasicBoxLen
+    if extendedSize {
+        sizeHeaderLen += 8
     }
-    return nn, buf
+    headerLen := sizeHeaderLen
+    if hasUserType {
+        headerLen += len(box.UserType)
+    }
+    bufferSize := box.Size
+    if extendedSize || bufferSize == 0 {
+        bufferSize = uint64(headerLen)
+    }
+    buf := make([]byte, bufferSize)
+    if extendedSize {
+        binary.BigEndian.PutUint32(buf, 1)
+        binary.BigEndian.PutUint64(buf[BasicBoxLen:], box.Size)
+    } else {
+        binary.BigEndian.PutUint32(buf, uint32(box.Size))
+    }
+    copy(buf[4:], box.Type[:])
+    if hasUserType {
+        copy(buf[sizeHeaderLen:headerLen], box.UserType[:])
+    }
+    return headerLen, buf
 }
 
 // aligned(8) class FullBox(unsigned int(32) boxtype, unsigned int(8) v, bit(24) f) extends Box(boxtype) {
