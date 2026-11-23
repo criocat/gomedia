@@ -75,7 +75,7 @@ type RtspClient struct {
     timeout          int
     scale            float32
     speed            float32
-    timeRange        RangeTime
+    timeRange        *RangeTime
 }
 
 type ClientOption func(cli *RtspClient)
@@ -208,7 +208,24 @@ func (client *RtspClient) Pause() error {
 }
 
 func (client *RtspClient) Play() {
+    if client.sessionId != "" && !client.isRecord {
+        _ = client.sendPlay()
+    }
+}
 
+func (client *RtspClient) sendPlay() error {
+    request := makePlay(client.sessionControlURL(), client.cseq)
+    if client.timeRange != nil {
+        request.Fileds[Range] = client.timeRange.EncodeString()
+    }
+    if client.scale != 0 {
+        request.Fileds[Scale] = strconv.FormatFloat(float64(client.scale), 'f', -1, 32)
+    }
+    if client.speed != 0 {
+        request.Fileds[Speed] = strconv.FormatFloat(float64(client.speed), 'f', -1, 32)
+    }
+    client.reponseHandler = client.handlePlay
+    return client.sendRtspRequest(&request)
 }
 
 func (client *RtspClient) SetSpeed(speed float32) {
@@ -220,7 +237,7 @@ func (client *RtspClient) SetScale(scale float32) {
 }
 
 func (client *RtspClient) SetRange(timeRange RangeTime) {
-    client.timeRange = timeRange
+    client.timeRange = &timeRange
 }
 
 func (client *RtspClient) EnableRTCP() {
@@ -613,17 +630,12 @@ func (client *RtspClient) handleSetup(res *RtspResponse) error {
         return client.sendRtspRequest(&req)
     }
 
-    var req *RtspRequest
     if client.isRecord {
         recordReq := makeRecord(client.uri, client.cseq)
-        req = &recordReq
         client.reponseHandler = client.handleRecord
-    } else {
-        playReq := makePlay(client.sessionControlURL(), client.cseq)
-        req = &playReq
-        client.reponseHandler = client.handlePlay
+        return client.sendRtspRequest(&recordReq)
     }
-    return client.sendRtspRequest(req)
+    return client.sendPlay()
 }
 
 func (client *RtspClient) handlePlay(res *RtspResponse) (err error) {

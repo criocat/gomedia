@@ -312,3 +312,35 @@ func TestRTSPPauseAndTeardownLifecycle(t *testing.T) {
 		})
 	}
 }
+
+func TestRTSPPlaySendsConfiguredHeadersAndResumes(t *testing.T) {
+	client, sent := startControlTestClient(t, &controlTestLifecycle{}, controlTestSDP+"a=control:audio\r\n")
+	client.SetRange(RangeTime{rangeType: RANGE_NPT, begin: 1250, end: 3500})
+	client.SetScale(2)
+	client.SetSpeed(1.5)
+	checkPlay := func(count int) {
+		t.Helper()
+		if len(*sent) != count || !strings.HasPrefix((*sent)[count-1], "PLAY rtsp://localhost/source RTSP/1.0\r\n") {
+			t.Fatalf("requests = %q, want PLAY at position %d", *sent, count)
+		}
+		for _, header := range []string{"Session: 12345678", "Range: npt=1.250-3.500", "Scale: 2", "Speed: 1.5"} {
+			if !strings.Contains((*sent)[count-1], "\r\n"+header+"\r\n") {
+				t.Errorf("PLAY is missing %q", header)
+			}
+		}
+	}
+
+	feedControlMessage(t, client, controlTestSetupOK)
+	checkPlay(4)
+	feedControlMessage(t, client, "RTSP/1.0 200 OK\r\nCSeq: 4\r\nSession: 12345678\r\n\r\n")
+	if err := client.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	feedControlMessage(t, client, "RTSP/1.0 200 OK\r\nCSeq: 5\r\nSession: 12345678\r\n\r\n")
+	client.Play()
+	checkPlay(6)
+	feedControlMessage(t, client, "RTSP/1.0 200 OK\r\nCSeq: 6\r\nSession: 12345678\r\n\r\n")
+	if client.state != STATE_Playing {
+		t.Errorf("resumed client state = %d, want Playing", client.state)
+	}
+}
