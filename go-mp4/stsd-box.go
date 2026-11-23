@@ -333,8 +333,9 @@ func makeStsd(track *mp4track, handler_type HandlerType) []byte {
     }
 
     if track.cid == MP4_CODEC_H264 {
-        avbox = makeAvcCBox(extraData)
+        avbox = makeAvcCBox(mp4ConfigWithFourByteNALLengths(extraData, 4))
     } else if track.cid == MP4_CODEC_H265 {
+        extraData = mp4ConfigWithFourByteNALLengths(extraData, 21)
         if inBand {
             extraData = hevcConfigWithInBandParameterSets(extraData)
         }

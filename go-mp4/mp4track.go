@@ -62,8 +62,9 @@ func (state *videoParameterSetState) writeInBand(keyFrame bool) bool {
 
 type h264ExtraData struct {
     videoParameterSetState
-    spss [][]byte
-    ppss [][]byte
+    spss          [][]byte
+    ppss          [][]byte
+    nalLengthSize int
 }
 
 func (extra *h264ExtraData) export() []byte {
@@ -75,6 +76,9 @@ func (extra *h264ExtraData) export() []byte {
 
 func (extra *h264ExtraData) load(data []byte) {
     extra.spss, extra.ppss = codec.CovertExtradata(data)
+    if len(data) > 4 {
+        extra.nalLengthSize = int(data[4]&3) + 1
+    }
 }
 
 type h265ExtraData struct {

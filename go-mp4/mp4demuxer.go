@@ -345,11 +345,19 @@ func (demuxer *MovDemuxer) ReadPacket() (*AVPacket, error) {
             if !ok {
                 panic("must init aacExtraData first")
             }
+            sample, err := normalizeMP4NALLengths(sample, extra.nalLengthSize, 1)
+            if err != nil {
+                return nil, err
+            }
             avpkg.Data = demuxer.processH264(sample, extra)
         } else if whichTrack.cid == MP4_CODEC_H265 {
             extra, ok := whichTrack.extra.(*h265ExtraData)
             if !ok {
                 panic("must init aacExtraData first")
+            }
+            sample, err := normalizeMP4NALLengths(sample, int(extra.hvccExtra.LengthSizeMinusOne)+1, 2)
+            if err != nil {
+                return nil, err
             }
             avpkg.Data = demuxer.processH265(sample, extra)
         } else if whichTrack.cid == MP4_CODEC_AAC {
