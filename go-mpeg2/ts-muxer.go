@@ -21,13 +21,14 @@ func NewPESStream(pid uint16, cid TS_STREAM_TYPE) *pes_stream {
 }
 
 type table_pmt struct {
-    pid            uint16
-    cc             uint8
-    pcr_pid        uint16
-    pcrOnVideo     bool
-    version_number uint8
-    pm             uint16
-    streams        []*pes_stream
+    pid               uint16
+    cc                uint8
+    pcr_pid           uint16
+    pcrOnVideo        bool
+    version_number    uint8
+    pm                uint16
+    streams           []*pes_stream
+    advertisedStreams int
 }
 
 func NewTablePmt() *table_pmt {
@@ -110,6 +111,9 @@ func (mux *TSMuxer) Write(pid uint16, data []byte, pts uint64, dts uint64) error
     if whichpmt == nil || whichstream == nil {
         return errors.New("not Found pid stream")
     }
+    if 13+5*len(whichpmt.streams) > 1021 {
+        return errors.New("too many streams for one MPEG-TS program map section")
+    }
     oldPCRPID := whichpmt.pcr_pid
     isVideo := findPESIDByStreamType(whichstream.streamtype) == PES_STREAM_VIDEO
     if oldPCRPID == 0 || (isVideo && !whichpmt.pcrOnVideo) {
@@ -117,7 +121,9 @@ func (mux *TSMuxer) Write(pid uint16, data []byte, pts uint64, dts uint64) error
         whichpmt.pcrOnVideo = isVideo
     }
     pcrPIDChanged := oldPCRPID != 0 && whichpmt.pcr_pid != oldPCRPID
-    if pcrPIDChanged {
+    streamListChanged := whichpmt.advertisedStreams != 0 && whichpmt.advertisedStreams != len(whichpmt.streams)
+    pmtChanged := pcrPIDChanged || streamListChanged
+    if pmtChanged {
         whichpmt.version_number = (whichpmt.version_number + 1) & 0x1f
     }
 
@@ -147,7 +153,7 @@ func (mux *TSMuxer) Write(pid uint16, data []byte, pts uint64, dts uint64) error
         })
     }
 
-    if pcrPIDChanged || mux.pat_period == 0 || mux.pat_period+400 < dts {
+    if pmtChanged || mux.pat_period == 0 || mux.pat_period+400 < dts {
         mux.pat_period = dts
         if mux.pat_period == 0 {
             mux.pat_period = 1 //avoid write pat twice
@@ -175,6 +181,7 @@ func (mux *TSMuxer) Write(pid uint16, data []byte, pts uint64, dts uint64) error
                 sp.ES_Info_Length = 0
                 tmppmt.Streams = append(tmppmt.Streams, sp)
             }
+            pmt.advertisedStreams = len(pmt.streams)
             mux.writePmt(tmppmt, pmt)
         }
     }
@@ -192,36 +199,41 @@ func (mux *TSMuxer) Write(pid uint16, data []byte, pts uint64, dts uint64) error
 }
 
 func (mux *TSMuxer) writePat(pat *Pat) {
-    var tshdr TSPacket
-    tshdr.Payload_unit_start_indicator = 1
-    tshdr.PID = 0
-    tshdr.Adaptation_field_control = 0x01
-    tshdr.Continuity_counter = mux.pat.cc
-    mux.pat.cc = (mux.pat.cc + 1) % 16
-    bsw := codec.NewBitStreamWriter(TS_PAKCET_SIZE)
-    tshdr.EncodeHeader(bsw)
-    bsw.PutByte(0x00) //pointer
-    pat.Encode(bsw)
-    bsw.FillRemainData(0xff)
-    if mux.OnPacket != nil {
-        mux.OnPacket(bsw.Bits())
-    }
+    section := codec.NewBitStreamWriter(TS_PAKCET_SIZE)
+    pat.Encode(section)
+    mux.writePSI(0, &mux.pat.cc, section.Bits())
 }
 
 func (mux *TSMuxer) writePmt(pmt *Pmt, t_pmt *table_pmt) {
-    var tshdr TSPacket
-    tshdr.Payload_unit_start_indicator = 1
-    tshdr.PID = t_pmt.pid
-    tshdr.Adaptation_field_control = 0x01
-    tshdr.Continuity_counter = t_pmt.cc
-    t_pmt.cc = (t_pmt.cc + 1) % 16
-    bsw := codec.NewBitStreamWriter(TS_PAKCET_SIZE)
-    tshdr.EncodeHeader(bsw)
-    bsw.PutByte(0x00) //pointer
-    pmt.Encode(bsw)
-    bsw.FillRemainData(0xff)
-    if mux.OnPacket != nil {
-        mux.OnPacket(bsw.Bits())
+    section := codec.NewBitStreamWriter(16 + 5*len(pmt.Streams))
+    pmt.Encode(section)
+    mux.writePSI(t_pmt.pid, &t_pmt.cc, section.Bits())
+}
+
+func (mux *TSMuxer) writePSI(pid uint16, counter *uint8, section []byte) {
+    for start := uint8(1); len(section) > 0; start = 0 {
+        header := TSPacket{
+            Payload_unit_start_indicator: start,
+            PID:                          pid,
+            Adaptation_field_control:     1,
+            Continuity_counter:           *counter,
+        }
+        *counter = (*counter + 1) & 0x0f
+        packet := codec.NewBitStreamWriter(TS_PAKCET_SIZE)
+        header.EncodeHeader(packet)
+        if start == 1 {
+            packet.PutByte(0) // The section starts immediately after the pointer.
+        }
+        length := TS_PAKCET_SIZE - packet.ByteOffset()
+        if length > len(section) {
+            length = len(section)
+        }
+        packet.PutBytes(section[:length])
+        section = section[length:]
+        packet.FillRemainData(0xff)
+        if mux.OnPacket != nil {
+            mux.OnPacket(packet.Bits())
+        }
     }
 }
 
