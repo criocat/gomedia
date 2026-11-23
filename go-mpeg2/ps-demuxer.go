@@ -242,6 +242,12 @@ func (psdemuxer *PSDemuxer) guessCodecid(stream *psstream) {
 }
 
 func (psdemuxer *PSDemuxer) demuxPespacket(stream *psstream, pes *PesPacket) error {
+    if pes.PTS_DTS_flags&2 == 0 {
+        timed := *pes
+        timed.Pts = stream.pts
+        timed.Dts = stream.dts
+        pes = &timed
+    }
     switch stream.cid {
     case PS_STREAM_AAC, PS_STREAM_G711A, PS_STREAM_G711U:
         return psdemuxer.demuxAudio(stream, pes)

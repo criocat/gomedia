@@ -156,6 +156,7 @@ func (pkg *PesPacket) Decode(bs *codec.BitStream) error {
         return errNeedMore
     }
     bs.Markdot()
+    pkg.Pts = 0
     if pkg.PTS_DTS_flags&0x02 == 0x02 {
         bs.SkipBits(4)
         pkg.Pts = bs.GetBits(3)
@@ -251,7 +252,11 @@ func (pkg *PesPacket) DecodeMpeg1(bs *codec.BitStream) error {
     if bs.NextBits(2) == 0x01 {
         bs.SkipBits(16)
     }
+    pkg.PTS_DTS_flags = 0
+    pkg.Pts = 0
+    pkg.Dts = 0
     if bs.NextBits(4) == 0x02 {
+        pkg.PTS_DTS_flags = 2
         bs.SkipBits(4)
         pkg.Pts = bs.GetBits(3)
         bs.SkipBits(1)
@@ -259,7 +264,9 @@ func (pkg *PesPacket) DecodeMpeg1(bs *codec.BitStream) error {
         bs.SkipBits(1)
         pkg.Pts = pkg.Pts<<15 | bs.GetBits(15)
         bs.SkipBits(1)
+        pkg.Dts = pkg.Pts
     } else if bs.NextBits(4) == 0x03 {
+        pkg.PTS_DTS_flags = 3
         bs.SkipBits(4)
         pkg.Pts = bs.GetBits(3)
         bs.SkipBits(1)
