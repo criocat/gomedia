@@ -5,11 +5,12 @@ import (
 )
 
 type psstream struct {
-    sid       uint8
-    cid       PS_STREAM_TYPE
-    pts       uint64
-    dts       uint64
-    streamBuf []byte
+    sid             uint8
+    cid             PS_STREAM_TYPE
+    pts             uint64
+    dts             uint64
+    streamBuf       []byte
+    videoTimestamps pesVideoTimestamps
 }
 
 func newpsstream(sid uint8, cid PS_STREAM_TYPE) *psstream {
@@ -186,14 +187,19 @@ func (psdemuxer *PSDemuxer) updateStreams(psm *Program_stream_map) {
 }
 
 func (psdemuxer *PSDemuxer) flushStream(stream *psstream) {
-    if len(stream.streamBuf) == 0 {
-        return
-    }
     frame := stream.streamBuf
     stream.streamBuf = nil
-    if psdemuxer.OnFrame != nil {
-        psdemuxer.OnFrame(frame, stream.cid, stream.pts/90, stream.dts/90)
+    stream.videoTimestamps = stream.videoTimestamps[:0]
+    if len(frame) == 0 || psdemuxer.OnFrame == nil {
+        return
     }
+    if stream.cid == PS_STREAM_H264 || stream.cid == PS_STREAM_H265 {
+        start, sc := codec.FindStartCode(frame, 0)
+        if start >= 0 && isPSVideoAUD(stream.cid, frame[start+int(sc):]) {
+            return
+        }
+    }
+    psdemuxer.OnFrame(frame, stream.cid, stream.pts/90, stream.dts/90)
 }
 
 func (psdemuxer *PSDemuxer) Flush() {
@@ -278,42 +284,41 @@ func (psdemuxer *PSDemuxer) demuxAudio(stream *psstream, pes *PesPacket) error {
 }
 
 func (psdemuxer *PSDemuxer) demuxH26x(stream *psstream, pes *PesPacket) error {
-    buffered := len(stream.streamBuf)
-    if buffered == 0 {
-        stream.pts = pes.Pts
-        stream.dts = pes.Dts
+    if pes.PTS_DTS_flags&2 != 0 {
+        stream.videoTimestamps = append(stream.videoTimestamps, pesVideoTimestamp{
+            offset: len(stream.streamBuf),
+            pts:    pes.Pts,
+            dts:    pes.Dts,
+        })
     }
     stream.streamBuf = append(stream.streamBuf, pes.Pes_payload...)
     start, sc := codec.FindStartCode(stream.streamBuf, 0)
     for start >= 0 {
-        if start+int(sc) >= buffered {
-            stream.pts = pes.Pts
-            stream.dts = pes.Dts
-        }
-        end, sc2 := codec.FindStartCode(stream.streamBuf, start+int(sc))
+        stream.videoTimestamps.applyThrough(start, &stream.pts, &stream.dts)
+        naluStart := start + int(sc)
+        end, sc2 := codec.FindStartCode(stream.streamBuf, naluStart)
         if end < 0 {
             break
         }
-        if stream.cid == PS_STREAM_H264 {
-            naluType := codec.H264NaluType(stream.streamBuf[start:])
-            if naluType != codec.H264_NAL_AUD {
-                if psdemuxer.OnFrame != nil {
-                    psdemuxer.OnFrame(stream.streamBuf[start:end], stream.cid, stream.pts/90, stream.dts/90)
-                }
-            }
-        } else if stream.cid == PS_STREAM_H265 {
-            naluType := codec.H265NaluType(stream.streamBuf[start:])
-            if naluType != codec.H265_NAL_AUD {
-                if psdemuxer.OnFrame != nil {
-                    psdemuxer.OnFrame(stream.streamBuf[start:end], stream.cid, stream.pts/90, stream.dts/90)
-                }
-            }
+        if psdemuxer.OnFrame != nil && !isPSVideoAUD(stream.cid, stream.streamBuf[naluStart:end]) {
+            psdemuxer.OnFrame(stream.streamBuf[start:end], stream.cid, stream.pts/90, stream.dts/90)
         }
         start = end
         sc = sc2
     }
     if start >= 0 {
         stream.streamBuf = stream.streamBuf[start:]
+        stream.videoTimestamps.removePrefix(start)
     }
     return nil
+}
+
+func isPSVideoAUD(cid PS_STREAM_TYPE, nalu []byte) bool {
+    if len(nalu) == 0 {
+        return false
+    }
+    if cid == PS_STREAM_H264 {
+        return codec.H264NaluTypeWithoutStartCode(nalu) == codec.H264_NAL_AUD
+    }
+    return codec.H265NaluTypeWithoutStartCode(nalu) == codec.H265_NAL_AUD
 }

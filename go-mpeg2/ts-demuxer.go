@@ -11,27 +11,7 @@ type pakcet_t struct {
     payload         []byte
     pts             uint64
     dts             uint64
-    videoTimestamps []tsVideoTimestamp
-}
-
-type tsVideoTimestamp struct {
-    offset   int // Start of the PES payload in the buffered video data.
-    pts, dts uint64
-}
-
-func (pkg *pakcet_t) applyVideoTimestamps(frameStart int) {
-    consumed := 0
-    for _, timestamp := range pkg.videoTimestamps {
-        if timestamp.offset > frameStart {
-            break
-        }
-        pkg.pts, pkg.dts = timestamp.pts, timestamp.dts
-        consumed++
-    }
-    if consumed != 0 {
-        remaining := copy(pkg.videoTimestamps, pkg.videoTimestamps[consumed:])
-        pkg.videoTimestamps = pkg.videoTimestamps[:remaining]
-    }
+    videoTimestamps pesVideoTimestamps
 }
 
 func newPacket_t(size uint32) *pakcet_t {
@@ -419,7 +399,7 @@ func (demuxer *TSDemuxer) doVideoPesPacket(stream *tsstream, hasTimestamp bool) 
         stream.pkg.dts = stream.dts
     }
     if hasTimestamp {
-        stream.pkg.videoTimestamps = append(stream.pkg.videoTimestamps, tsVideoTimestamp{
+        stream.pkg.videoTimestamps = append(stream.pkg.videoTimestamps, pesVideoTimestamp{
             offset: len(stream.pkg.payload),
             pts:    stream.pts,
             dts:    stream.dts,
@@ -456,7 +436,7 @@ func (demuxer *TSDemuxer) splitVideoAccessUnits(stream *tsstream) {
     start, startCodeSize := codec.FindStartCode(data, 0)
     frameStart := start
     if frameStart >= 0 {
-        stream.pkg.applyVideoTimestamps(frameStart)
+        stream.pkg.videoTimestamps.applyThrough(frameStart, &stream.pkg.pts, &stream.pkg.dts)
     }
     headerSize := 1
     if stream.cid == TS_STREAM_H265 {
@@ -497,7 +477,7 @@ func (demuxer *TSDemuxer) splitVideoAccessUnits(stream *tsstream) {
                 demuxer.OnFrame(stream.cid, frame, stream.pkg.pts/90, stream.pkg.dts/90)
             }
             frameStart = start
-            stream.pkg.applyVideoTimestamps(frameStart)
+            stream.pkg.videoTimestamps.applyThrough(frameStart, &stream.pkg.pts, &stream.pkg.dts)
             hasVCL = false
         }
         hasVCL = hasVCL || isVCL
@@ -507,8 +487,6 @@ func (demuxer *TSDemuxer) splitVideoAccessUnits(stream *tsstream) {
     if frameStart > 0 {
         size := copy(data, data[frameStart:])
         stream.pkg.payload = data[:size]
-        for i := range stream.pkg.videoTimestamps {
-            stream.pkg.videoTimestamps[i].offset -= frameStart
-        }
+        stream.pkg.videoTimestamps.removePrefix(frameStart)
     }
 }
