@@ -26,6 +26,36 @@ type tsstream struct {
     pes_sid PES_STREMA_ID
     pes_pkg *PesPacket
     pkg     *pakcet_t
+    pts     uint64
+    dts     uint64
+    hasDTS  bool
+}
+
+const tsTimestampPeriod = uint64(1) << 33
+
+// Place a 33-bit clock value in the epoch nearest to reference.
+func unwrapTSTimestamp(value, reference uint64) uint64 {
+    value |= reference &^ (tsTimestampPeriod - 1)
+    if value < reference && reference-value > tsTimestampPeriod/2 {
+        return value + tsTimestampPeriod
+    }
+    if value > reference && value-reference > tsTimestampPeriod/2 && value >= tsTimestampPeriod {
+        return value - tsTimestampPeriod
+    }
+    return value
+}
+
+func (stream *tsstream) updateTimestamps() {
+    if stream.pes_pkg.PTS_DTS_flags&2 == 0 {
+        return
+    }
+    dts := stream.pes_pkg.Dts
+    if stream.hasDTS {
+        dts = unwrapTSTimestamp(dts, stream.dts)
+    }
+    stream.dts = dts
+    stream.pts = unwrapTSTimestamp(stream.pes_pkg.Pts, dts)
+    stream.hasDTS = true
 }
 
 type tsprogram struct {
@@ -103,14 +133,22 @@ func (demuxer *TSDemuxer) Input(r io.Reader) error {
                         return err
                     }
                     pmt := pkg.Payload.(*Pmt)
+                    if pmt.Current_next_indicator == 0 {
+                        continue
+                    }
                     s.pn = pmt.Program_number
                     for _, ps := range pmt.Streams {
-                        if _, found := s.streams[ps.Elementary_PID]; !found {
-                            s.streams[ps.Elementary_PID] = &tsstream{
-                                cid:     TS_STREAM_TYPE(ps.StreamType),
-                                pes_sid: findPESIDByStreamType(TS_STREAM_TYPE(ps.StreamType)),
-                                pes_pkg: NewPesPacket(),
+                        cid := TS_STREAM_TYPE(ps.StreamType)
+                        if old := s.streams[ps.Elementary_PID]; old != nil {
+                            if old.cid == cid {
+                                continue
                             }
+                            demuxer.flushStream(old)
+                        }
+                        s.streams[ps.Elementary_PID] = &tsstream{
+                            cid:     cid,
+                            pes_sid: findPESIDByStreamType(cid),
+                            pes_pkg: NewPesPacket(),
                         }
                     }
                 } else {
@@ -118,21 +156,24 @@ func (demuxer *TSDemuxer) Input(r io.Reader) error {
                         if sid != pkg.PID {
                             continue
                         }
+                        if pkg.Field != nil && pkg.Field.Discontinuity_indicator != 0 {
+                            stream.hasDTS = false
+                        }
                         if pkg.Payload_unit_start_indicator == 1 {
                             err := stream.pes_pkg.Decode(bs)
                             // ignore error if it was a short payload read, next ts packet should append missing data
                             if err != nil && !(errors.Is(err, errNeedMore) && stream.pes_pkg.Pes_payload != nil) {
                                 return err
                             }
+                            stream.updateTimestamps()
                             pkg.Payload = stream.pes_pkg
                         } else {
                             stream.pes_pkg.Pes_payload = bs.RemainData()
                             pkg.Payload = bs.RemainData()
                         }
-                        stype := findPESIDByStreamType(stream.cid)
-                        if stype == PES_STREAM_AUDIO {
+                        if stream.pes_sid == PES_STREAM_AUDIO {
                             demuxer.doAudioPesPacket(stream, pkg.Payload_unit_start_indicator)
-                        } else if stype == PES_STREAM_VIDEO {
+                        } else if stream.pes_sid == PES_STREAM_VIDEO {
                             demuxer.doVideoPesPacket(stream, pkg.Payload_unit_start_indicator)
                         }
                     }
@@ -187,34 +228,29 @@ LOOP:
 func (demuxer *TSDemuxer) flush() {
     for _, pm := range demuxer.programs {
         for _, stream := range pm.streams {
-            if stream.pkg == nil || len(stream.pkg.payload) == 0 {
-                continue
-            }
-
-            if demuxer.OnFrame == nil {
-                continue
-            }
-            if stream.cid == TS_STREAM_H264 || stream.cid == TS_STREAM_H265 {
-                audLen := 0
-                codec.SplitFrameWithStartCode(stream.pkg.payload, func(nalu []byte) bool {
-                    if stream.cid == TS_STREAM_H264 {
-                        if codec.H264NaluType(nalu) == codec.H264_NAL_AUD {
-                            audLen += len(nalu)
-                        }
-                    } else {
-                        if codec.H265NaluType(nalu) == codec.H265_NAL_AUD {
-                            audLen += len(nalu)
-                        }
-                    }
-                    return false
-                })
-                demuxer.OnFrame(stream.cid, stream.pkg.payload[audLen:], stream.pkg.pts/90, stream.pkg.dts/90)
-            } else {
-                demuxer.OnFrame(stream.cid, stream.pkg.payload, stream.pkg.pts/90, stream.pkg.dts/90)
-            }
-            stream.pkg = nil
+            demuxer.flushStream(stream)
         }
     }
+}
+
+func (demuxer *TSDemuxer) flushStream(stream *tsstream) {
+    if stream.pkg == nil || len(stream.pkg.payload) == 0 || demuxer.OnFrame == nil {
+        return
+    }
+    payload := stream.pkg.payload
+    if stream.cid == TS_STREAM_H264 || stream.cid == TS_STREAM_H265 {
+        audLen := 0
+        codec.SplitFrameWithStartCode(payload, func(nalu []byte) bool {
+            if (stream.cid == TS_STREAM_H264 && codec.H264NaluType(nalu) == codec.H264_NAL_AUD) ||
+                (stream.cid == TS_STREAM_H265 && codec.H265NaluType(nalu) == codec.H265_NAL_AUD) {
+                audLen += len(nalu)
+            }
+            return false
+        })
+        payload = payload[audLen:]
+    }
+    demuxer.OnFrame(stream.cid, payload, stream.pkg.pts/90, stream.pkg.dts/90)
+    stream.pkg = nil
 }
 
 func (demuxer *TSDemuxer) doVideoPesPacket(stream *tsstream, start uint8) {
@@ -223,8 +259,8 @@ func (demuxer *TSDemuxer) doVideoPesPacket(stream *tsstream, start uint8) {
     }
     if stream.pkg == nil {
         stream.pkg = newPacket_t(1024)
-        stream.pkg.pts = stream.pes_pkg.Pts
-        stream.pkg.dts = stream.pes_pkg.Dts
+        stream.pkg.pts = stream.pts
+        stream.pkg.dts = stream.dts
     }
     stream.pkg.payload = append(stream.pkg.payload, stream.pes_pkg.Pes_payload...)
     update := false
@@ -234,8 +270,8 @@ func (demuxer *TSDemuxer) doVideoPesPacket(stream *tsstream, start uint8) {
         update = demuxer.splitH265Frame(stream)
     }
     if update {
-        stream.pkg.pts = stream.pes_pkg.Pts
-        stream.pkg.dts = stream.pes_pkg.Dts
+        stream.pkg.pts = stream.pts
+        stream.pkg.dts = stream.dts
     }
 }
 
@@ -246,19 +282,19 @@ func (demuxer *TSDemuxer) doAudioPesPacket(stream *tsstream, start uint8) {
 
     if stream.pkg == nil {
         stream.pkg = newPacket_t(1024)
-        stream.pkg.pts = stream.pes_pkg.Pts
-        stream.pkg.dts = stream.pes_pkg.Dts
+        stream.pkg.pts = stream.pts
+        stream.pkg.dts = stream.dts
     }
 
-    if len(stream.pkg.payload) > 0 && (start == 1 || stream.pes_pkg.Pts != stream.pkg.pts) {
+    if len(stream.pkg.payload) > 0 && (start == 1 || stream.pts != stream.pkg.pts) {
         if demuxer.OnFrame != nil {
             demuxer.OnFrame(stream.cid, stream.pkg.payload, stream.pkg.pts/90, stream.pkg.dts/90)
         }
         stream.pkg.payload = stream.pkg.payload[:0]
     }
     stream.pkg.payload = append(stream.pkg.payload, stream.pes_pkg.Pes_payload...)
-    stream.pkg.pts = stream.pes_pkg.Pts
-    stream.pkg.dts = stream.pes_pkg.Dts
+    stream.pkg.pts = stream.pts
+    stream.pkg.dts = stream.dts
 }
 
 func (demuxer *TSDemuxer) splitH264Frame(stream *tsstream) bool {
