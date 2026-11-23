@@ -355,7 +355,17 @@ func (muxer *Movmuxer) FlushFragment() (err error) {
 }
 
 func (muxer *Movmuxer) flushFragment() (err error) {
+    writeOffset, err := muxer.writer.Seek(0, io.SeekCurrent)
+    if err != nil {
+        return err
+    }
+    defer func() {
+        if err != nil {
+            _, _ = muxer.writer.Seek(writeOffset, io.SeekStart)
+        }
+    }()
 
+    moofOffset := writeOffset
     if muxer.movFlag.isFragment() {
         if muxer.nextFragmentId == 1 { //first fragment ,write moov
             ftypBox := makeFtypBox(mov_tag(iso5), 0x200, []uint32{mov_tag(iso5), mov_tag(iso6), mov_tag(mp41)})
@@ -364,45 +374,31 @@ func (muxer *Movmuxer) flushFragment() (err error) {
                 return err
             }
             muxer.writeMoov(muxer.writer)
+            if moofOffset, err = muxer.writer.Seek(0, io.SeekCurrent); err != nil {
+                return err
+            }
         }
     }
 
-    var moofOffset int64
-    if moofOffset, err = muxer.writer.Seek(0, io.SeekCurrent); err != nil {
-        return err
-    }
-    var mdatlen uint64 = 0
-    for i := uint32(1); i < muxer.nextTrackId; i++ {
-        if len(muxer.tracks[i].samplelist) == 0 {
-            continue
-        }
-        for j := 0; j < len(muxer.tracks[i].samplelist); j++ {
-            muxer.tracks[i].samplelist[j].offset += mdatlen
-        }
-        ws := muxer.tracks[i].writer.(*fmp4WriterSeeker)
+    mdatlen := uint64(BasicBoxLen)
+    for _, track := range muxer.tracks {
+        ws := track.writer.(*fmp4WriterSeeker)
         mdatlen += uint64(len(ws.buffer))
     }
-    mdatlen += 8
 
-    moofSize := 0
     mfhd := makeMfhdBox(muxer.nextFragmentId)
+    moofSize := BasicBoxLen + len(mfhd)
+    for i := uint32(1); i < muxer.nextTrackId; i++ {
+        moofSize += len(makeTraf(muxer.tracks[i], uint64(moofOffset), 0))
+    }
 
-    moofSize += len(mfhd)
     trafs := make([][]byte, len(muxer.tracks))
+    trackDataOffset := uint64(moofSize + BasicBoxLen)
     for i := uint32(1); i < muxer.nextTrackId; i++ {
-        traf := makeTraf(muxer.tracks[i], uint64(moofOffset), uint64(0))
-        moofSize += len(traf)
-        trafs[i-1] = traf
+        track := muxer.tracks[i]
+        trafs[i-1] = makeTraf(track, uint64(moofOffset), trackDataOffset)
+        trackDataOffset += uint64(len(track.writer.(*fmp4WriterSeeker).buffer))
     }
-
-    moofSize += 8 //moof box
-    mfhd = makeMfhdBox(muxer.nextFragmentId)
-    trafs = make([][]byte, len(muxer.tracks))
-    for i := uint32(1); i < muxer.nextTrackId; i++ {
-        traf := makeTraf(muxer.tracks[i], uint64(moofOffset), uint64(moofSize+8)) //moofSize + 8(mdat box)
-        trafs[i-1] = traf
-    }
-    muxer.nextFragmentId++
 
     moof := BasicBox{Type: [4]byte{'m', 'o', 'o', 'f'}}
     moof.Size = uint64(moofSize)
@@ -445,6 +441,12 @@ func (muxer *Movmuxer) flushFragment() (err error) {
     }
 
     for i := uint32(1); i < muxer.nextTrackId; i++ {
+        ws := muxer.tracks[i].writer.(*fmp4WriterSeeker)
+        if _, err = muxer.writer.Write(ws.buffer); err != nil {
+            return err
+        }
+    }
+    for i := uint32(1); i < muxer.nextTrackId; i++ {
         if len(muxer.tracks[i].samplelist) > 0 {
             firstPts := muxer.tracks[i].samplelist[0].pts
             firstDts := muxer.tracks[i].samplelist[0].dts
@@ -462,13 +464,10 @@ func (muxer *Movmuxer) flushFragment() (err error) {
             muxer.tracks[i].fragments = append(muxer.tracks[i].fragments, frag)
         }
         ws := muxer.tracks[i].writer.(*fmp4WriterSeeker)
-        _, err = muxer.writer.Write(ws.buffer)
-        if err != nil {
-            return err
-        }
         ws.buffer = ws.buffer[:0]
         ws.offset = 0
         muxer.tracks[i].clearSamples()
     }
+    muxer.nextFragmentId++
     return nil
 }
