@@ -164,8 +164,10 @@ func (psdemuxer *PSDemuxer) decodeSystemHeader(bs *codec.BitStream) error {
 }
 
 func (psdemuxer *PSDemuxer) updateStreams(psm *Program_stream_map) {
+    var active [256]bool
     for _, info := range psm.Stream_map {
         sid := info.Elementary_stream_id
+        active[sid] = true
         cid := PS_STREAM_TYPE(info.Stream_type)
         if stream := psdemuxer.streamMap[sid]; stream != nil {
             if stream.cid == cid {
@@ -174,6 +176,12 @@ func (psdemuxer *PSDemuxer) updateStreams(psm *Program_stream_map) {
             psdemuxer.flushStream(stream)
         }
         psdemuxer.streamMap[sid] = newpsstream(sid, cid)
+    }
+    for sid, stream := range psdemuxer.streamMap {
+        if !active[sid] {
+            psdemuxer.flushStream(stream)
+            delete(psdemuxer.streamMap, sid)
+        }
     }
 }
 
@@ -264,13 +272,18 @@ func (psdemuxer *PSDemuxer) demuxAudio(stream *psstream, pes *PesPacket) error {
 }
 
 func (psdemuxer *PSDemuxer) demuxH26x(stream *psstream, pes *PesPacket) error {
-    if len(stream.streamBuf) == 0 {
+    buffered := len(stream.streamBuf)
+    if buffered == 0 {
         stream.pts = pes.Pts
         stream.dts = pes.Dts
     }
     stream.streamBuf = append(stream.streamBuf, pes.Pes_payload...)
     start, sc := codec.FindStartCode(stream.streamBuf, 0)
     for start >= 0 {
+        if start+int(sc) >= buffered {
+            stream.pts = pes.Pts
+            stream.dts = pes.Dts
+        }
         end, sc2 := codec.FindStartCode(stream.streamBuf, start+int(sc))
         if end < 0 {
             break
@@ -293,8 +306,8 @@ func (psdemuxer *PSDemuxer) demuxH26x(stream *psstream, pes *PesPacket) error {
         start = end
         sc = sc2
     }
-    stream.streamBuf = stream.streamBuf[start:]
-    stream.pts = pes.Pts
-    stream.dts = pes.Dts
+    if start >= 0 {
+        stream.streamBuf = stream.streamBuf[start:]
+    }
     return nil
 }
