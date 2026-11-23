@@ -280,7 +280,7 @@ func (sh *System_header) Decode(bs *codec.BitStream) error {
         bs.UnRead(6 * 8)
         return errNeedMore
     }
-    if sh.Header_length < 6 || (sh.Header_length-6)%3 != 0 {
+    if sh.Header_length < 6 {
         return errParser
     }
     bs.SkipBits(1)
@@ -297,7 +297,7 @@ func (sh *System_header) Decode(bs *codec.BitStream) error {
     bs.SkipBits(7)
     sh.Streams = sh.Streams[:0]
     least := sh.Header_length - 6
-    for least > 0 && bs.NextBits(1) == 0x01 {
+    for least >= 3 && bs.NextBits(1) == 0x01 {
         es := new(Elementary_Stream)
         es.Stream_id = bs.Uint8(8)
         bs.SkipBits(2)
@@ -306,8 +306,14 @@ func (sh *System_header) Decode(bs *codec.BitStream) error {
         sh.Streams = append(sh.Streams, es)
         least -= 3
     }
-    if least > 0 {
+    if least >= 3 {
         return errParser
+    }
+    // Some encoders fill the last one or two bytes with 0xff.
+    for ; least > 0; least-- {
+        if bs.Uint8(8) != 0xff {
+            return errParser
+        }
     }
     return nil
 }
