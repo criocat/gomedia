@@ -74,9 +74,31 @@ var crc_table [256]uint32 = [256]uint32{
     0xafb010b1, 0xab710d06, 0xa6322bdf, 0xa2f33668, 0xbcb4666d, 0xb8757bda, 0xb5365d03, 0xb1f740b4,
 }
 
+var checksumTables = makeChecksumTables()
+
+func makeChecksumTables() [8][256]uint32 {
+    tables := [8][256]uint32{crc_table}
+    for distance := 1; distance < len(tables); distance++ {
+        for value, crc := range tables[distance-1] {
+            tables[distance][value] = (crc << 8) ^ crc_table[byte(crc>>24)]
+        }
+    }
+    return tables
+}
+
 func makeChecksum(crc uint32, buffer []byte) uint32 {
-    for index := range buffer {
-        crc = (crc << 8) ^ crc_table[byte(crc>>24)^buffer[index]]
+    // Ogg feeds the most significant bit first. Each table includes the
+    // zero bytes that follow its input byte within the eight-byte block.
+    for len(buffer) >= 8 {
+        word := binary.BigEndian.Uint64(buffer) ^ uint64(crc)<<32
+        crc = checksumTables[7][byte(word>>56)] ^ checksumTables[6][byte(word>>48)] ^
+            checksumTables[5][byte(word>>40)] ^ checksumTables[4][byte(word>>32)] ^
+            checksumTables[3][byte(word>>24)] ^ checksumTables[2][byte(word>>16)] ^
+            checksumTables[1][byte(word>>8)] ^ checksumTables[0][byte(word)]
+        buffer = buffer[8:]
+    }
+    for _, value := range buffer {
+        crc = (crc << 8) ^ crc_table[byte(crc>>24)^value]
     }
     return crc
 }
