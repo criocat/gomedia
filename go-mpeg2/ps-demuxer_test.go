@@ -12,7 +12,6 @@ var ps2 []byte = []byte{0x00, 0x00, 0x01, 0xBA, 0x40, 0x01, 0x00, 0x01, 0x33, 0x
 var ps3 []byte = []byte{0x00, 0x00, 0x01, 0xBA, 0x40, 0x01, 0x00, 0x01, 0x33, 0x44, 0xFF, 0xFF, 0xFF, 0xF0, 0x00, 0x00, 0x01, 0xBB}
 var ps4 []byte = []byte{0x00, 0x00, 0x01, 0xBA, 0x40, 0x01, 0x00, 0x01, 0x33, 0x44, 0xFF, 0xFF, 0xFF, 0xF1, 0x34, 0x00, 0x00, 0x01, 0xBB, 0x00, 0x01, 0x00, 0x01, 0x33, 0x44, 0xFF, 0x34}
 var ps5 []byte = []byte{0x00, 0x00, 0x01, 0xBA, 0x40, 0x01, 0x00, 0x01, 0x33, 0x44, 0xFF, 0xFF, 0xFF, 0xF1, 0x34, 0x00, 0x00, 0x01, 0xBB, 0x00, 0x09, 0x00, 0x01, 0x33, 0x44, 0xFF, 0x34, 0x81, 0x00, 0x00}
-var ps6 []byte = []byte{0x00, 0x00, 0x01, 0xBC, 0x40, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x34, 0x81, 0x00, 0x00}
 var ps7 []byte = []byte{0x00, 0x00, 0x01, 0xBA, 0x20, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03}
 
 func TestPSDemuxerSystemHeaderRequiresPack(t *testing.T) {
@@ -76,10 +75,6 @@ func TestPSDemuxer_Input(t *testing.T) {
 			streamMap: make(map[uint8]*psstream),
 			pkg:       new(PSPacket),
 		}, args: args{data: ps5}, wantErr: false},
-		{name: "test6", fields: fields{
-			streamMap: make(map[uint8]*psstream),
-			pkg:       new(PSPacket),
-		}, args: args{data: ps6}, wantErr: false},
 		{name: "test-mpeg1", fields: fields{
 			streamMap: make(map[uint8]*psstream),
 			pkg:       new(PSPacket),
@@ -98,5 +93,33 @@ func TestPSDemuxer_Input(t *testing.T) {
 				t.Errorf("PSDemuxer.Input() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestPSDemuxerReadsSplitProgramStreamMap(t *testing.T) {
+	const streamID = 0xE0
+	writer := codec.NewBitStreamWriter(32)
+	(&Program_stream_map{
+		Current_next_indicator: 1,
+		Stream_map: []*Elementary_stream_elem{{
+			Stream_type:          uint8(PS_STREAM_H264),
+			Elementary_stream_id: streamID,
+		}},
+	}).Encode(writer)
+	packet := writer.Bits()
+	split := len(packet) - 1
+
+	demuxer := NewPSDemuxer()
+	if err := demuxer.Input(packet[:split]); err != errNeedMore {
+		t.Fatalf("incomplete program stream map: got %v, want %v", err, errNeedMore)
+	}
+	if len(demuxer.streamMap) != 0 {
+		t.Fatal("incomplete program stream map registered a stream")
+	}
+	if err := demuxer.Input(packet[split:]); err != nil {
+		t.Fatalf("completed program stream map: %v", err)
+	}
+	if stream := demuxer.streamMap[streamID]; stream == nil || stream.cid != PS_STREAM_H264 {
+		t.Fatal("completed program stream map did not register the H.264 stream")
 	}
 }
